@@ -12,19 +12,6 @@ A Chrome (Manifest V3) extension that finds pronunciation audio on any Wiktionar
 * Batch support: download one file or **Download All**.
 * Compact, **minimizable** on-page panel; simple popup to pick mode.
 
-## How it works
-
-1. The content script discovers audio via the MediaWiki REST API, with the Action API as a fallback.
-2. For conversion, an **offscreen document** loads **FFmpeg.wasm (single-thread core)** and performs the transcode.
-3. The service worker saves the result to your **Downloads** folder.
-
-Everything runs locally. FFmpeg is vendored with the extension.
-
-## Supported formats
-
-* Detects by MIME first, then extension. Works with **OGG/Opus, MP3, WAV, WebM, AAC/MP4, FLAC** and more.
-* Output (Convert mode): **WAV (PCM 16-bit, mono, 48 kHz)**.
-
 ## Install
 
 1. Clone the repo.
@@ -38,6 +25,19 @@ Everything runs locally. FFmpeg is vendored with the extension.
 2. Choose **Original** or **Convert** in the extension popup.
 3. Use the on-page “Audio Files” panel to **Download** items or **Download All**.
 4. Minimize/restore the panel with the −/+ control.
+
+## How it works
+
+1. The content script discovers audio via the MediaWiki REST API, with the Action API as a fallback.
+2. For conversion, an **offscreen document** loads **FFmpeg.wasm (single-thread core)** and performs the transcode.
+3. The service worker saves the result to your **Downloads** folder.
+
+Everything runs locally. FFmpeg is vendored with the extension.
+
+## Supported formats
+
+* Detects by MIME first, then extension. Works with **OGG/Opus, MP3, WAV, WebM, AAC/MP4, FLAC** and more.
+* Output (Convert mode): **WAV (PCM 16-bit, mono, 48 kHz)**.
 
 ## Files of interest
 
