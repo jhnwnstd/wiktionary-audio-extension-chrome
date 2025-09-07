@@ -1,0 +1,134 @@
+# ======================================
+# JS Chrome Extension
+# .gitignore
+# ======================================
+
+############################
+# Node / Package Managers
+############################
+node_modules/
+package-lock.json*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-lock.yaml*
+pnpm-debug.log*
+bun.lockb
+
+############################
+# Build Artifacts
+############################
+dist/
+build/
+out/
+.esbuild/
+.rpt2_cache/            # rollup-plugin-typescript2
+.rollup.cache/
+.parcel-cache/
+.vite/
+.next/
+.storybook-out/
+coverage/
+*.lcov
+*.map
+
+# Chrome extension packaging
+*.crx
+*.pem
+*.zip
+
+############################
+# ffmpeg.wasm (generated/cache)
+############################
+assets/ffmpeg/*.tmp
+assets/ffmpeg/*.bak
+assets/ffmpeg/*.log
+assets/ffmpeg/*.cache
+# If you download cores during build, keep sources versioned but ignore caches:
+assets/ffmpeg/cache/
+# Uncomment if your build *generates* the core files (not recommended):
+# assets/ffmpeg/ffmpeg-core.js
+# assets/ffmpeg/ffmpeg-core.wasm
+# assets/ffmpeg/ffmpeg-core.worker.js
+# assets/ffmpeg/ffmpeg-core-mt.js
+# assets/ffmpeg/ffmpeg-core-mt.wasm
+# assets/ffmpeg/ffmpeg-core-mt.worker.js
+
+############################
+# TypeScript / Tooling Caches
+############################
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+.cache/
+.tmp/
+tmp/
+.temporary/
+
+############################
+# Test Runners / E2E
+############################
+# Jest / Vitest
+.jest/
+.vitest/
+# Cypress
+cypress/videos/
+cypress/screenshots/
+cypress/downloads/
+# Playwright
+playwright-report/
+blob-report/
+test-results/
+
+############################
+# Linters / Formatters
+############################
+.eslintcache
+.stylelintcache
+.prettier-cache/
+*.lintcache
+
+############################
+# Env / Secrets / Local
+############################
+.env
+.env.*
+*.env
+*.secret
+*.local
+
+############################
+# Editors / IDE / OS
+############################
+# VS Code
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+# JetBrains
+.idea/
+*.iml
+
+# OS cruft
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+Icon?
+*.swp
+*.swo
+
+############################
+# Python (if you keep helper scripts)
+############################
+.venv/
+venv/
+__pycache__/
+*.pyc
+pip-log.txt
+
+############################
+# Project-specific private files
+############################
+.claude
+CLAUDE.md
