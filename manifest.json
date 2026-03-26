@@ -27,15 +27,12 @@
   ],
   "host_permissions": [
     "*://*.wiktionary.org/*",
-    "https://commons.wikimedia.org/*",
-    "https://*.wikimedia.org/*",
-    "https://upload.wikimedia.org/*"
+    "https://*.wikimedia.org/*"
   ],
   "web_accessible_resources": [{
     "resources": [
       "vendor/ffmpeg/*",
-      "vendor/ffmpeg/core/*",
-      "vendor/ffmpeg/core-mt/*"
+      "vendor/ffmpeg/core/*"
     ],
     "matches": ["*://*/*"]
   }],
