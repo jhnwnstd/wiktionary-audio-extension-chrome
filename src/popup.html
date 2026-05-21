@@ -153,17 +153,17 @@
     <div role="radiogroup" aria-labelledby="format-label" aria-describedby="format-desc">
       <div class="radio-container">
         <input type="radio" name="mode" value="original" id="original" data-testid="wad-mode-original">
-        <label class="radio-label" for="original">Original filename</label>
+        <label class="radio-label" for="original">Save original file</label>
       </div>
 
       <div class="radio-container">
         <input type="radio" name="mode" value="convert" id="convert" data-testid="wad-mode-convert">
-        <label class="radio-label" for="convert">Convert to .wav (ffmpeg)</label>
+        <label class="radio-label" for="convert">Convert to WAV copy (for analysis)</label>
       </div>
     </div>
 
     <div class="warning" id="wav-warning">
-      📁 Conversion uses ffmpeg.wasm for real audio transcoding to PCM WAV format.
+      Exports a local WAV copy (16-bit PCM, mono, 48 kHz) suitable for tools like Praat. Source quality is preserved, not enhanced — lossy originals cannot be restored.
     </div>
   </div>
 

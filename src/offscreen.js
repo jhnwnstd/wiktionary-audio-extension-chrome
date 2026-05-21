@@ -56,6 +56,48 @@ async function cleanupFiles(...names) {
   }
 }
 
+// Conversion target: 16-bit PCM WAV, mono, 48 kHz. Research-friendly export
+// for analysis tools like Praat — NOT an enhancement step. Lossy source audio
+// (most Wiktionary files are Opus/OGG) cannot be restored to higher fidelity.
+//
+// No hidden processing: no normalization, no AGC, no denoise, no gain change,
+// no silence trim. FFmpeg's default resampler handles input rate → 48 kHz.
+//
+// We tested adding `-af aresample=dither_method=triangular` for explicit
+// dithering on bit-depth reduction, but the vendored single-thread FFmpeg.wasm
+// build (src/vendor/ffmpeg/core/) rejects the filter — likely lavfi/aresample
+// is not compiled in. If a future vendored build includes it, prepend
+// `'-af', 'aresample=dither_method=triangular',` ahead of `-c:a`.
+//
+// `-threads 1` is also rejected by this build; threading is already pinned
+// to single-thread by the core itself.
+async function runTranscode(inName, outName) {
+  const args = [
+    '-i', inName,
+    '-vn',
+    '-c:a', 'pcm_s16le',
+    '-ar', '48000',
+    '-ac', '1',
+    '-y', outName,
+  ];
+  log('[Offscreen] ffmpeg', args.join(' '));
+  await ffmpeg.exec(args);
+}
+
+function logOutputWavHeader(buffer) {
+  if (!DEBUG) return;
+  try {
+    const view = new DataView(buffer);
+    if (view.byteLength < 44) return;
+    const riff = String.fromCharCode.apply(null, new Uint8Array(buffer, 0, 4));
+    const wave = String.fromCharCode.apply(null, new Uint8Array(buffer, 8, 4));
+    const channels = view.getUint16(22, true);
+    const sampleRate = view.getUint32(24, true);
+    const bitsPerSample = view.getUint16(34, true);
+    log('[Offscreen] output WAV header:', { riff, wave, channels, sampleRate, bitsPerSample, bytes: view.byteLength });
+  } catch { /* header decoded best-effort */ }
+}
+
 // All communication uses Port-based messaging
 chrome.runtime.onConnect.addListener(port => {
   if (port.name !== 'ffmpeg') return;
@@ -92,12 +134,11 @@ chrome.runtime.onConnect.addListener(port => {
       // Load FFmpeg and convert
       await loadFFmpeg();
       await ffmpeg.writeFile(inName, audioBytes);
-      await ffmpeg.exec([
-        '-i', inName, '-vn', '-ac', '1', '-ar', '48000', '-sample_fmt', 's16', '-y', outName
-      ]);
+      await runTranscode(inName, outName);
 
       const out = await ffmpeg.readFile(outName);
       log('[Offscreen] Converted:', out.buffer.byteLength, 'bytes');
+      logOutputWavHeader(out.buffer);
       await cleanupFiles(inName, outName);
 
       // Send result as regular array (JSON-serializable over Port)
