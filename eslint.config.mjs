@@ -42,7 +42,7 @@ export default [
     }
   },
   {
-    files: ["tests/**/*.js", "playwright.config.js"],
+    files: ["tests/**/*.js"],
     languageOptions: {
       sourceType: "commonjs",
       globals: {

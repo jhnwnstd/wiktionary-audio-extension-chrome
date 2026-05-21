@@ -26,5 +26,5 @@ Thumbs.db
 *.swp
 
 # Project-specific
+/docs
 .claude
-research.md

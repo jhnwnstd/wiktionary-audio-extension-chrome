@@ -278,7 +278,7 @@ function escapeRegex(s) {
 // ("well-known") in the same call. Without context, we assume speakers are
 // more likely to have hyphens than words.
 function parseAudioFilename(raw, knownWord = null) {
-  if (!raw) return { lang: null, dialect: null, speaker: null, word: 'audio', ext: '' };
+  if (!raw) return { lang: null, dialect: null, speaker: null, word: 'audio', extra: null, ext: '' };
 
   // Strip query string / fragment defensively (real Wikimedia URLs don't carry
   // them, but tracking-rewriter proxies sometimes append things like
@@ -297,11 +297,11 @@ function parseAudioFilename(raw, knownWord = null) {
   // LinguaLibre parens-form: LL-Q<num>_(<lang3>)-<speaker>-<word>
   if (wordAnchor) {
     const m = stem.match(new RegExp(`^LL-Q\\d+_\\(([a-z]{2,3})\\)-(.+)-(${wordAnchor})$`, 'i'));
-    if (m) return { lang: m[1].toLowerCase(), dialect: null, speaker: m[2], word: m[3], ext };
+    if (m) return { lang: m[1].toLowerCase(), dialect: null, speaker: m[2], word: m[3], extra: null, ext };
   }
   const ll1 = stem.match(/^LL-Q\d+_\(([a-z]{2,3})\)-(.+)-([^-]+)$/i);
   if (ll1) {
-    return { lang: ll1[1].toLowerCase(), dialect: null, speaker: ll1[2], word: ll1[3], ext };
+    return { lang: ll1[1].toLowerCase(), dialect: null, speaker: ll1[2], word: ll1[3], extra: null, ext };
   }
 
   // LinguaLibre hyphenated Q-form: LL-Q<num>-<speaker>-<word>
@@ -309,21 +309,21 @@ function parseAudioFilename(raw, knownWord = null) {
   // bake in a Q-ID -> ISO code map.)
   if (wordAnchor) {
     const m = stem.match(new RegExp(`^LL-Q\\d+-(.+)-(${wordAnchor})$`));
-    if (m) return { lang: null, dialect: null, speaker: m[1], word: m[2], ext };
+    if (m) return { lang: null, dialect: null, speaker: m[1], word: m[2], extra: null, ext };
   }
   const ll2 = stem.match(/^LL-Q\d+-(.+)-([^-]+)$/);
   if (ll2) {
-    return { lang: null, dialect: null, speaker: ll2[1], word: ll2[2], ext };
+    return { lang: null, dialect: null, speaker: ll2[1], word: ll2[2], extra: null, ext };
   }
 
   // LinguaLibre speaker-first hyphen form: LL-<speaker>-<lang2or3>-<word>
   if (wordAnchor) {
     const m = stem.match(new RegExp(`^LL-(.+)-([a-z]{2,3})-(${wordAnchor})$`));
-    if (m) return { lang: m[2].toLowerCase(), dialect: null, speaker: m[1], word: m[3], ext };
+    if (m) return { lang: m[2].toLowerCase(), dialect: null, speaker: m[1], word: m[3], extra: null, ext };
   }
   const ll3 = stem.match(/^LL-(.+)-([a-z]{2,3})-([^-]+)$/);
   if (ll3) {
-    return { lang: ll3[2].toLowerCase(), dialect: null, speaker: ll3[1], word: ll3[3], ext };
+    return { lang: ll3[2].toLowerCase(), dialect: null, speaker: ll3[1], word: ll3[3], extra: null, ext };
   }
 
   // <Lang>-<dialect>-<word>. Two flavors, in priority order:
@@ -337,14 +337,21 @@ function parseAudioFilename(raw, knownWord = null) {
   //   (b) Unanchored: dialect capped at 7 chars total. Handles the simple
   //       case (En-au-Georgian, Es-am_lat-agua) without context.
   if (wordAnchor) {
-    // Allow `pageTitle` or `pageTitle-<short-suffix>` to terminate the stem.
-    // The short-suffix branch handles variant-indexed recordings (hello-2,
-    // hello-fast) without losing context.
-    const wordTail = `(?:${wordAnchor}|${wordAnchor}-[a-z0-9]{1,12})`;
-    const re = new RegExp(`^([A-Z][a-z]{0,2})-([a-z][a-z_-]{0,28}[a-z])-(${wordTail})$`);
-    const m = stem.match(re);
-    if (m) {
-      return { lang: m[1].toLowerCase(), dialect: m[2], speaker: null, word: m[3], ext };
+    // (a) `pageTitle` or `pageTitle-<short-suffix>` (variant recordings).
+    const shortTail = `(?:${wordAnchor}|${wordAnchor}-[a-z0-9]{1,12})`;
+    const reShort = new RegExp(`^([A-Z][a-z]{0,2})-([a-z][a-z_-]{0,28}[a-z])-(${shortTail})$`);
+    const m1 = stem.match(reShort);
+    if (m1) {
+      return { lang: m1[1].toLowerCase(), dialect: m1[2], speaker: null, word: m1[3], extra: null, ext };
+    }
+    // (b) `pageTitle-<long-hyphenated-suffix>` (phonetic feature, e.g.
+    //     En-us-water-cot-caught-merger.ogg). The hyphenated tail is captured
+    //     as `extra` so display can show it as a qualifier like
+    //     `English American 'water' (cot caught merger) .ogg`.
+    const reExtra = new RegExp(`^([A-Z][a-z]{0,2})-([a-z][a-z_-]{0,28}[a-z])-(${wordAnchor})-(.+)$`);
+    const m2 = stem.match(reExtra);
+    if (m2) {
+      return { lang: m2[1].toLowerCase(), dialect: m2[2], speaker: null, word: m2[3], extra: m2[4], ext };
     }
   }
   const langDialect = stem.match(/^([A-Z][a-z]{0,2})-([a-z][a-z_-]{0,5}[a-z])-(.+)$/);
@@ -354,6 +361,7 @@ function parseAudioFilename(raw, knownWord = null) {
       dialect: langDialect[2],
       speaker: null,
       word: langDialect[3],
+      extra: null,
       ext,
     };
   }
@@ -361,10 +369,10 @@ function parseAudioFilename(raw, knownWord = null) {
   // <Lang>-<word>  e.g. De-Wasser
   const langWord = stem.match(/^([A-Z][a-z]{0,2})-(.+)$/);
   if (langWord) {
-    return { lang: langWord[1].toLowerCase(), dialect: null, speaker: null, word: langWord[2], ext };
+    return { lang: langWord[1].toLowerCase(), dialect: null, speaker: null, word: langWord[2], extra: null, ext };
   }
 
-  return { lang: null, dialect: null, speaker: null, word: stem, ext };
+  return { lang: null, dialect: null, speaker: null, word: stem, extra: null, ext };
 }
 
 function friendlyAudioFilename(parsed) {
@@ -374,6 +382,9 @@ function friendlyAudioFilename(parsed) {
   const dialect = describeDialect(parsed.dialect);
   if (dialect) parts.push(dialect);
   parts.push(normalizeFieldValue(parsed.word));
+  // Phonetic qualifier (e.g. "cot-caught-merger") goes right after the word
+  // so files with the same word but different features remain distinguishable.
+  if (parsed.extra) parts.push(normalizeFieldValue(parsed.extra));
   // Speaker disambiguator (LinguaLibre) so multiple speakers don't collide.
   if (parsed.speaker) parts.push(normalizeFieldValue(parsed.speaker));
   // `_` joins different fields; within-field separators are already `-`.
@@ -411,6 +422,11 @@ function humanReadableName(parsed, originalFilename) {
     if (dialect) parts.push(dialect.split('-').map(titleCasePart).join(' '));
   }
   parts.push(`'${String(parsed.word).replace(/_/g, ' ')}'`);
+  if (parsed.extra) {
+    // Phonetic qualifier shown in parens, with hyphens converted to spaces
+    // for readability: "cot-caught-merger" -> "(cot caught merger)".
+    parts.push(`(${String(parsed.extra).replace(/[-_]/g, ' ')})`);
+  }
   if (parsed.speaker) {
     parts.push(`by ${String(parsed.speaker).replace(/_/g, ' ')}`);
   }
@@ -486,6 +502,31 @@ async function fetchJson(url) {
   const response = await fetch(url, { credentials: 'omit' });
   if (!response.ok) return null;
   return response.json();
+}
+
+// Walk the rendered page to find which audio files appear and in what order.
+// We use this as a presentation hint: items returned by the Action API are
+// sorted to match the order the user sees on the page. Items that aren't
+// referenced in the DOM (rare) drop to the end of the list in API order.
+//
+// Cross-edition note: Wiktionary file-page links use the `File:` prefix on
+// English but localized prefixes on other editions (Datei: on de, Fichier:
+// on fr, etc.). We match by the trailing audio-file extension instead of
+// the prefix, so this works on any edition.
+function findDomAudioOrder() {
+  const order = new Map();
+  let counter = 0;
+  // <audio><source> is the canonical rendered form; <a href="...File:...ogg">
+  // catches edits that link to file pages directly.
+  const candidates = document.querySelectorAll('audio source[src], a[href]');
+  for (const el of candidates) {
+    const url = el.getAttribute('src') || el.getAttribute('href') || '';
+    const m = url.match(/[/:]([^/?#:]+\.(?:ogg|oga|opus|mp3|wav|webm|m4a|aac|flac))(?:[?#]|$)/i);
+    if (!m) continue;
+    const filename = decodeURIComponent(m[1]);
+    if (!order.has(filename)) order.set(filename, counter++);
+  }
+  return order;
 }
 
 // Discover all audio files attached to a page via Action API. Handles
@@ -774,6 +815,16 @@ function createUI(items) {
       item.downloadName = friendlyAudioFilename(parsed);
       item.displayName = humanReadableName(parsed, item.filename);
     });
+
+    // Reorder items to match the on-page order (what the user sees in the
+    // Pronunciation section). Items not found in the DOM stay in API order
+    // after the DOM-anchored items.
+    const domOrder = findDomAudioOrder();
+    let fallbackOrder = domOrder.size;
+    audioFiles.forEach(item => {
+      item.order = domOrder.has(item.filename) ? domOrder.get(item.filename) : fallbackOrder++;
+    });
+    audioFiles.sort((a, b) => a.order - b.order);
 
     if (audioFiles.length) createUI(audioFiles);
   } catch (error) {

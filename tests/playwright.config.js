@@ -1,10 +1,11 @@
-// Playwright config — extension tests use launchPersistentContext per test,
-// so we don't declare browser projects here.
+// Playwright config -- extension tests use launchPersistentContext per test,
+// so we don't declare browser projects here. Paths resolve relative to this
+// config file's own location (tests/), so testDir is './e2e' not './tests/e2e'.
 
 const { defineConfig } = require('@playwright/test');
 
 module.exports = defineConfig({
-  testDir: './tests/e2e',
+  testDir: './e2e',
   timeout: 30_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,

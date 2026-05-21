@@ -166,7 +166,7 @@ function describeDialect(code) {
 }
 function escapeRegex(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 function parseAudioFilename(raw, knownWord = null) {
-  if (!raw) return { lang: null, dialect: null, speaker: null, word: 'audio', ext: '' };
+  if (!raw) return { lang: null, dialect: null, speaker: null, word: 'audio', extra: null, ext: '' };
   const decoded = decodeURIComponent(String(raw).split('?')[0].split('#')[0]);
   const base = decoded.split('/').pop() || decoded;
   const extMatch = base.match(/\.([a-z0-9]+)$/i);
@@ -175,32 +175,34 @@ function parseAudioFilename(raw, knownWord = null) {
   const wordAnchor = knownWord ? escapeRegex(knownWord) : null;
   if (wordAnchor) {
     const m = stem.match(new RegExp(`^LL-Q\\d+_\\(([a-z]{2,3})\\)-(.+)-(${wordAnchor})$`, 'i'));
-    if (m) return { lang: m[1].toLowerCase(), dialect: null, speaker: m[2], word: m[3], ext };
+    if (m) return { lang: m[1].toLowerCase(), dialect: null, speaker: m[2], word: m[3], extra: null, ext };
   }
   const ll1 = stem.match(/^LL-Q\d+_\(([a-z]{2,3})\)-(.+)-([^-]+)$/i);
-  if (ll1) return { lang: ll1[1].toLowerCase(), dialect: null, speaker: ll1[2], word: ll1[3], ext };
+  if (ll1) return { lang: ll1[1].toLowerCase(), dialect: null, speaker: ll1[2], word: ll1[3], extra: null, ext };
   if (wordAnchor) {
     const m = stem.match(new RegExp(`^LL-Q\\d+-(.+)-(${wordAnchor})$`));
-    if (m) return { lang: null, dialect: null, speaker: m[1], word: m[2], ext };
+    if (m) return { lang: null, dialect: null, speaker: m[1], word: m[2], extra: null, ext };
   }
   const ll2 = stem.match(/^LL-Q\d+-(.+)-([^-]+)$/);
-  if (ll2) return { lang: null, dialect: null, speaker: ll2[1], word: ll2[2], ext };
+  if (ll2) return { lang: null, dialect: null, speaker: ll2[1], word: ll2[2], extra: null, ext };
   if (wordAnchor) {
     const m = stem.match(new RegExp(`^LL-(.+)-([a-z]{2,3})-(${wordAnchor})$`));
-    if (m) return { lang: m[2].toLowerCase(), dialect: null, speaker: m[1], word: m[3], ext };
+    if (m) return { lang: m[2].toLowerCase(), dialect: null, speaker: m[1], word: m[3], extra: null, ext };
   }
   const ll3 = stem.match(/^LL-(.+)-([a-z]{2,3})-([^-]+)$/);
-  if (ll3) return { lang: ll3[2].toLowerCase(), dialect: null, speaker: ll3[1], word: ll3[3], ext };
+  if (ll3) return { lang: ll3[2].toLowerCase(), dialect: null, speaker: ll3[1], word: ll3[3], extra: null, ext };
   if (wordAnchor) {
-    const wordTail = `(?:${wordAnchor}|${wordAnchor}-[a-z0-9]{1,12})`;
-    const m = stem.match(new RegExp(`^([A-Z][a-z]{0,2})-([a-z][a-z_-]{0,28}[a-z])-(${wordTail})$`));
-    if (m) return { lang: m[1].toLowerCase(), dialect: m[2], speaker: null, word: m[3], ext };
+    const shortTail = `(?:${wordAnchor}|${wordAnchor}-[a-z0-9]{1,12})`;
+    const m1 = stem.match(new RegExp(`^([A-Z][a-z]{0,2})-([a-z][a-z_-]{0,28}[a-z])-(${shortTail})$`));
+    if (m1) return { lang: m1[1].toLowerCase(), dialect: m1[2], speaker: null, word: m1[3], extra: null, ext };
+    const m2 = stem.match(new RegExp(`^([A-Z][a-z]{0,2})-([a-z][a-z_-]{0,28}[a-z])-(${wordAnchor})-(.+)$`));
+    if (m2) return { lang: m2[1].toLowerCase(), dialect: m2[2], speaker: null, word: m2[3], extra: m2[4], ext };
   }
   const ld = stem.match(/^([A-Z][a-z]{0,2})-([a-z][a-z_-]{0,5}[a-z])-(.+)$/);
-  if (ld) return { lang: ld[1].toLowerCase(), dialect: ld[2], speaker: null, word: ld[3], ext };
+  if (ld) return { lang: ld[1].toLowerCase(), dialect: ld[2], speaker: null, word: ld[3], extra: null, ext };
   const lw = stem.match(/^([A-Z][a-z]{0,2})-(.+)$/);
-  if (lw) return { lang: lw[1].toLowerCase(), dialect: null, speaker: null, word: lw[2], ext };
-  return { lang: null, dialect: null, speaker: null, word: stem, ext };
+  if (lw) return { lang: lw[1].toLowerCase(), dialect: null, speaker: null, word: lw[2], extra: null, ext };
+  return { lang: null, dialect: null, speaker: null, word: stem, extra: null, ext };
 }
 function friendlyAudioFilename(parsed) {
   const parts = [];
@@ -209,6 +211,7 @@ function friendlyAudioFilename(parsed) {
   const dialect = describeDialect(parsed.dialect);
   if (dialect) parts.push(dialect);
   parts.push(normalizeFieldValue(parsed.word));
+  if (parsed.extra) parts.push(normalizeFieldValue(parsed.extra));
   if (parsed.speaker) parts.push(normalizeFieldValue(parsed.speaker));
   const stem = parts.join('_');
   return parsed.ext ? `${stem}.${parsed.ext}` : stem;
@@ -231,6 +234,7 @@ function humanReadableName(parsed, originalFilename) {
     if (dialect) parts.push(dialect.split('-').map(titleCasePart).join(' '));
   }
   parts.push(`'${String(parsed.word).replace(/_/g, ' ')}'`);
+  if (parsed.extra) parts.push(`(${String(parsed.extra).replace(/[-_]/g, ' ')})`);
   if (parsed.speaker) parts.push(`by ${String(parsed.speaker).replace(/_/g, ' ')}`);
   return parts.join(' ') + (parsed.ext ? ` .${parsed.ext}` : '');
 }
@@ -552,6 +556,44 @@ assert(
 assert(
   humanReadableName(variantAnchored, 'En-us-hello-4.ogg') === "English American 'hello-4' .ogg",
   'variant suffix display'
+);
+
+section('Phonetic extra (e.g. cot-caught merger)');
+// Real example from en/water page: file has phonetic feature in name.
+const merger = parseAudioFilename('En-us-water-cot-caught-merger.ogg', 'water');
+assert(
+  merger.dialect === 'us' && merger.word === 'water' && merger.extra === 'cot-caught-merger',
+  'cot-caught-merger captured as extra (word stays "water")'
+);
+assert(
+  friendlyAudioFilename(merger) === 'english_american_water_cot-caught-merger.ogg',
+  'extra appears in filename between word and ext'
+);
+assert(
+  humanReadableName(merger, 'En-us-water-cot-caught-merger.ogg') === "English American 'water' (cot caught merger) .ogg",
+  'extra rendered in parens with spaces in display'
+);
+
+// Long-form: "without the cot-caught merger" (a different recording variant).
+const without = parseAudioFilename('En-us-water-without-the-cot-caught-merger.ogg', 'water');
+assert(
+  without.word === 'water' && without.extra === 'without-the-cot-caught-merger',
+  'long phonetic phrase preserved as extra'
+);
+assert(
+  humanReadableName(without, 'En-us-water-without-the-cot-caught-merger.ogg') ===
+    "English American 'water' (without the cot caught merger) .ogg",
+  'long phonetic phrase rendered with spaces'
+);
+
+// Anchor failure case: without knownWord, the extra-capture pattern doesn't
+// run, so the parser falls back to the older greedy regex (word absorbs the
+// whole tail). This is the documented degraded behavior when context is
+// unavailable.
+const mergerNoAnchor = parseAudioFilename('En-us-water-cot-caught-merger.ogg');
+assert(
+  mergerNoAnchor.extra === null,
+  'no anchor: extra stays null (degrades gracefully)'
 );
 
 // URL query string from Wikimedia API leaks should be stripped at the
