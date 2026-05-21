@@ -38,14 +38,77 @@ function parseAudioPages(pages) {
   return results;
 }
 
+// Mirrored from src/background.js sanitizeFilename — keep in sync.
+const WINDOWS_RESERVED_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
+const FORBIDDEN_CHARS_RE = /[<>:"/\\|?*\x00-\x1f]/g;
+const UTF8_ENCODER = new TextEncoder();
+const utf8ByteLength = (s) => UTF8_ENCODER.encode(s).length;
+function truncateToBytes(s, maxBytes) {
+  if (utf8ByteLength(s) <= maxBytes) return s;
+  let result = s;
+  while (result.length > 0 && utf8ByteLength(result) > maxBytes) result = result.slice(0, -1);
+  return result;
+}
 function sanitizeFilename(filename) {
-  return filename
-    .replace(/[<>:"/\\|?*]/g, '_')
+  if (typeof filename !== 'string' || !filename) return 'audio';
+  let s = filename
+    .split('?')[0].split('#')[0]
+    .replace(FORBIDDEN_CHARS_RE, '_')
     .replace(/\s+/g, ' ')
     .replace(/^\.+/, '')
-    .trim()
-    .substring(0, 255);
+    .replace(/[. ]+$/, '')
+    .trim();
+  if (WINDOWS_RESERVED_RE.test(s)) s = '_' + s;
+  if (utf8ByteLength(s) > 255) {
+    const extIdx = s.lastIndexOf('.');
+    if (extIdx > 0 && s.length - extIdx <= 16) {
+      const ext = s.slice(extIdx);
+      s = truncateToBytes(s.slice(0, extIdx), 255 - utf8ByteLength(ext)) + ext;
+    } else {
+      s = truncateToBytes(s, 255);
+    }
+  }
+  return s || 'audio';
 }
+
+// Mirrored from src/content-script.js — keep in sync.
+const LANGUAGE_NAMES = {
+  en: 'english', de: 'german', fr: 'french', es: 'spanish', it: 'italian',
+  ja: 'japanese', zh: 'chinese', eng: 'english', deu: 'german', fra: 'french',
+};
+const DIALECT_NAMES = { us: 'american', uk: 'british', au: 'australian', ca: 'canadian' };
+function lookupName(code, table) {
+  if (!code) return null;
+  const key = code.toLowerCase();
+  return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : key;
+}
+function parseAudioFilename(raw) {
+  if (!raw) return { lang: null, dialect: null, speaker: null, word: 'audio', ext: '' };
+  const decoded = decodeURIComponent(String(raw).split('?')[0].split('#')[0]);
+  const base = decoded.split('/').pop() || decoded;
+  const extMatch = base.match(/\.([a-z0-9]+)$/i);
+  const ext = extMatch ? extMatch[1].toLowerCase() : '';
+  const stem = ext ? base.slice(0, base.length - ext.length - 1) : base;
+  const ll = stem.match(/^LL-Q\d+_\(([a-z]{2,3})\)-([^-]+)-(.+)$/i);
+  if (ll) return { lang: ll[1].toLowerCase(), dialect: null, speaker: ll[2], word: ll[3], ext };
+  const ld = stem.match(/^([A-Z][a-z]{0,2})-([a-z]{2,3})-(.+)$/);
+  if (ld) return { lang: ld[1].toLowerCase(), dialect: ld[2], speaker: null, word: ld[3], ext };
+  const lw = stem.match(/^([A-Z][a-z]{0,2})-(.+)$/);
+  if (lw) return { lang: lw[1].toLowerCase(), dialect: null, speaker: null, word: lw[2], ext };
+  return { lang: null, dialect: null, speaker: null, word: stem, ext };
+}
+function friendlyAudioFilename(parsed) {
+  const parts = [];
+  const lang = lookupName(parsed.lang, LANGUAGE_NAMES);
+  if (lang) parts.push(lang);
+  const dialect = lookupName(parsed.dialect, DIALECT_NAMES);
+  if (dialect) parts.push(dialect);
+  parts.push(parsed.word);
+  if (parsed.speaker) parts.push(parsed.speaker);
+  const stem = parts.join('_').replace(/\s+/g, '_');
+  return parsed.ext ? `${stem}.${parsed.ext}` : stem;
+}
+function formatAudio(raw) { return friendlyAudioFilename(parseAudioFilename(raw)); }
 
 function arrayBufferToBase64(arrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
@@ -117,14 +180,66 @@ const wr = parseAudioPages(waterPages);
 assert(wr.length === 2, 'mixed formats');
 assert(wr[1].filename === 'LL-Q1860_(eng)-water.wav', 'URL decoded filename');
 
-section('Filename sanitization');
+section('Filename sanitization (cross-platform: Win/Mac/Linux)');
+// Existing behavior preserved
 assert(sanitizeFilename('En-au-topper.ogg') === 'En-au-topper.ogg', 'clean unchanged');
 assert(sanitizeFilename('a<b>c:d"e') === 'a_b_c_d_e', 'special chars');
 assert(sanitizeFilename('...hidden') === 'hidden', 'leading dots');
 assert(sanitizeFilename('  spaced  ') === 'spaced', 'whitespace');
-assert(sanitizeFilename('a'.repeat(300)).length === 255, 'length cap');
 assert(sanitizeFilename('LL-Q150_(fra)-Jérémy.wav') === 'LL-Q150_(fra)-Jérémy.wav', 'unicode');
 assert(sanitizeFilename('En-au-topper.ogg'.replace(/\.[^.]+$/, '')) === 'En-au-topper', 'base name');
+
+// New cross-platform behavior
+assert(sanitizeFilename('') === 'audio', 'empty → audio fallback');
+assert(sanitizeFilename(null) === 'audio', 'null → audio fallback');
+assert(sanitizeFilename(undefined) === 'audio', 'undefined → audio fallback');
+assert(sanitizeFilename(123) === 'audio', 'non-string → audio fallback');
+assert(sanitizeFilename('foo|bar/baz.ogg') === 'foo_bar_baz.ogg', 'Linux/Mac slash + pipe');
+assert(sanitizeFilename('foo\x00bar.ogg') === 'foo_bar.ogg', 'NUL replaced');
+assert(sanitizeFilename('foo\x01\x1fbar.ogg') === 'foo__bar.ogg', 'control chars replaced');
+assert(sanitizeFilename('foo. ').endsWith('foo'), 'trailing dot+space stripped (Windows)');
+assert(sanitizeFilename('CON') === '_CON', 'Windows reserved CON');
+assert(sanitizeFilename('com1.txt') === '_com1.txt', 'Windows reserved COM1 case-insensitive');
+assert(sanitizeFilename('PRN.ogg') === '_PRN.ogg', 'Windows reserved PRN with extension');
+assert(sanitizeFilename('normal.txt') === 'normal.txt', 'non-reserved unchanged');
+assert(sanitizeFilename('foo.ogg?utm_source=bar') === 'foo.ogg', 'query string stripped');
+assert(sanitizeFilename('foo.ogg#frag') === 'foo.ogg', 'fragment stripped');
+assert(sanitizeFilename('水.ogg') === '水.ogg', 'CJK preserved');
+assert(sanitizeFilename('café.mp3') === 'café.mp3', 'accented preserved');
+
+// Length: 255 chars of ASCII fits in 255 bytes
+assert(sanitizeFilename('a'.repeat(300)).length === 255, 'ASCII length cap');
+assert(sanitizeFilename('a'.repeat(300) + '.ogg').endsWith('.ogg'), 'extension preserved on truncate');
+// 100 chars of '水' = 300 bytes UTF-8 → must truncate by byte count, not char count
+const longCJK = '水'.repeat(100);
+assert(utf8ByteLength(sanitizeFilename(longCJK)) <= 255, 'CJK truncated by UTF-8 bytes');
+
+section('Wiktionary audio filename parser');
+const p1 = parseAudioFilename('En-au-Georgian.ogg');
+assert(p1.lang === 'en' && p1.dialect === 'au' && p1.word === 'Georgian' && p1.ext === 'ogg', 'En-au-Georgian.ogg');
+const p2 = parseAudioFilename('De-Wasser.ogg');
+assert(p2.lang === 'de' && p2.dialect === null && p2.word === 'Wasser' && p2.ext === 'ogg', 'De-Wasser.ogg');
+const p3 = parseAudioFilename('LL-Q1860_(eng)-Speaker-water.wav');
+assert(p3.lang === 'eng' && p3.speaker === 'Speaker' && p3.word === 'water' && p3.ext === 'wav', 'LinguaLibre format');
+const p4 = parseAudioFilename('En-au-Georgian.ogg?utm_source=en.wiktionary.org&utm_campaign=imageinfo');
+assert(p4.lang === 'en' && p4.dialect === 'au' && p4.word === 'Georgian' && p4.ext === 'ogg', 'strips query string');
+const p5 = parseAudioFilename('https://upload.wikimedia.org/wikipedia/commons/4/4c/En-us-water.ogg');
+assert(p5.lang === 'en' && p5.dialect === 'us' && p5.word === 'water', 'full URL → last path segment');
+const p6 = parseAudioFilename('weird_name.mp3');
+assert(p6.lang === null && p6.word === 'weird_name' && p6.ext === 'mp3', 'unparseable falls back to stem');
+const p7 = parseAudioFilename('');
+assert(p7.word === 'audio' && p7.ext === '', 'empty input safe default');
+
+section('Friendly filename formatting');
+assert(formatAudio('En-au-Georgian.ogg') === 'english_australian_Georgian.ogg', 'En-au-Georgian → english_australian_Georgian');
+assert(formatAudio('De-Wasser.ogg') === 'german_Wasser.ogg', 'De-Wasser → german_Wasser');
+assert(formatAudio('En-us-water.ogg') === 'english_american_water.ogg', 'En-us-water → english_american_water');
+assert(formatAudio('Fr-eau.ogg') === 'french_eau.ogg', 'Fr-eau → french_eau');
+assert(formatAudio('LL-Q1860_(eng)-Stebbington-water.wav') === 'english_water_Stebbington.wav', 'LL → english_word_speaker');
+assert(formatAudio('En-au-Georgian.ogg?utm_source=foo') === 'english_australian_Georgian.ogg', 'friendly strips utm');
+assert(formatAudio('weird_name.mp3') === 'weird_name.mp3', 'unparseable pass-through');
+// Unknown dialect code passes through verbatim (lowercased)
+assert(formatAudio('En-xx-thing.ogg') === 'english_xx_thing.ogg', 'unknown dialect → code');
 
 section('REST API filter');
 const items = [

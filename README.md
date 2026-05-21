@@ -6,11 +6,11 @@ Download the original audio file, or convert it to WAV locally with vendored FFm
 
 ## Features
 
-• Finds pronunciation audio across Wiktionary language editions  
-• Supports Original mode for source files such as OGG, Opus, and MP3  
-• Supports Convert mode for 16 bit PCM WAV, mono, 48 kHz  
-• Supports individual and batch downloads  
-• Runs conversion locally in the browser  
+- Finds pronunciation audio across Wiktionary language editions  
+- Supports Original mode for source files such as OGG, Opus, and MP3  
+- Supports Convert mode for 16 bit PCM WAV, mono, 48 kHz  
+- Supports individual and batch downloads  
+- Runs conversion locally in the browser  
 
 ## Install
 
@@ -25,7 +25,7 @@ This is a zero build extension. Chrome loads `src/` directly.
 
 ## Usage
 
-1. Open a Wiktionary entry, such as `https://en.wiktionary.org/wiki/water`.
+1. Open a Wiktionary entry, such as `https://en.wiktionary.org/wiki/friendo`.
 2. Open the extension popup.
 3. Choose Original or Convert.
 4. Use the page panel to download one file or all files.
@@ -34,10 +34,10 @@ This is a zero build extension. Chrome loads `src/` directly.
 
 The extension uses these permissions.
 
-• `downloads` saves audio files  
-• `storage` remembers the selected mode  
-• `offscreen` runs FFmpeg.wasm conversion  
-• Host permissions allow access only to Wiktionary pages and Wikimedia audio resources  
+- `downloads` saves audio files  
+- `storage` remembers the selected mode  
+- `offscreen` runs FFmpeg.wasm conversion  
+- Host permissions allow access only to Wiktionary pages and Wikimedia audio resources  
 
 ## Development
 

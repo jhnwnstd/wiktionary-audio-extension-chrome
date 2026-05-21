@@ -16,13 +16,60 @@ function arrayBufferToBase64(arrayBuffer) {
   return btoa(bin);
 }
 
+// Cross-platform filename sanitizer covering the union of Windows, macOS, and
+// Linux filesystem restrictions. Preserves Unicode (e.g. 水, café) but enforces
+// a 255-byte UTF-8 cap, since most real filesystems use byte-length not
+// codepoint-length — a 100-character Chinese filename is ~300 bytes on disk.
+//
+// Rules enforced:
+//   * forbidden chars: < > : " / \ | ? * and control chars 0x00-0x1F
+//   * Windows reserved basenames: CON, PRN, AUX, NUL, COM1-9, LPT1-9
+//   * Windows forbids trailing space or period
+//   * leading dots stripped (avoids Unix hidden-file surprise)
+//   * 255-byte UTF-8 cap, preserving extension when possible
+//   * never empty — falls back to "audio"
+
+const WINDOWS_RESERVED_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
+const FORBIDDEN_CHARS_RE = /[<>:"/\\|?*\x00-\x1f]/g;
+const UTF8_ENCODER = new TextEncoder();
+
+function utf8ByteLength(s) {
+  return UTF8_ENCODER.encode(s).length;
+}
+
+function truncateToBytes(s, maxBytes) {
+  if (utf8ByteLength(s) <= maxBytes) return s;
+  let result = s;
+  while (result.length > 0 && utf8ByteLength(result) > maxBytes) {
+    result = result.slice(0, -1);
+  }
+  return result;
+}
+
 function sanitizeFilename(filename) {
-  return filename
-    .replace(/[<>:"/\\|?*]/g, '_')
+  if (typeof filename !== 'string' || !filename) return 'audio';
+
+  let s = filename
+    .split('?')[0].split('#')[0]
+    .replace(FORBIDDEN_CHARS_RE, '_')
     .replace(/\s+/g, ' ')
     .replace(/^\.+/, '')
-    .trim()
-    .substring(0, 255);
+    .replace(/[. ]+$/, '')
+    .trim();
+
+  if (WINDOWS_RESERVED_RE.test(s)) s = '_' + s;
+
+  if (utf8ByteLength(s) > 255) {
+    const extIdx = s.lastIndexOf('.');
+    if (extIdx > 0 && s.length - extIdx <= 16) {
+      const ext = s.slice(extIdx);
+      s = truncateToBytes(s.slice(0, extIdx), 255 - utf8ByteLength(ext)) + ext;
+    } else {
+      s = truncateToBytes(s, 255);
+    }
+  }
+
+  return s || 'audio';
 }
 
 // Ping offscreen via Port, returns a Promise that resolves on PONG
