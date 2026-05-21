@@ -553,21 +553,38 @@ function batchFolderName(hostname, title) {
   return `Wiktionary-${edition}-${title || 'audio'}`;
 }
 
-function showFeedback(button, message, isSuccess = true) {
+// Feedback states. `progress` is an open-ended state (no auto-reset) shown
+// while async work is in flight. Terminal states (`success`, `error`,
+// `partial`) auto-reset the button back to its idle look after 2s so the
+// reader has time to register the outcome without the button being stuck.
+const FEEDBACK_COLORS = {
+  progress: '#fbbc04',  // amber: "working"
+  success:  '#34a853',  // green
+  error:    '#ea4335',  // red
+  partial:  '#fb8c00',  // orange: "some files saved, some failed"
+};
+const FEEDBACK_IDLE_BG = '#1a73e8';
+const FEEDBACK_RESET_MS = 2000;
+
+function showFeedback(button, message, kind = 'success') {
   if (button._feedbackTimer) clearTimeout(button._feedbackTimer);
   if (!button._originalText) button._originalText = button.textContent;
 
   button.textContent = message;
-  button.style.background = isSuccess ? '#34a853' : '#ea4335';
+  button.style.background = FEEDBACK_COLORS[kind] || FEEDBACK_COLORS.success;
   button.disabled = true;
+
+  // Progress states stay until they are explicitly replaced by a terminal
+  // state. Terminal states auto-clear so the button is reusable.
+  if (kind === 'progress') return;
 
   button._feedbackTimer = setTimeout(() => {
     button.textContent = button._originalText;
-    button.style.background = '#1a73e8';
+    button.style.background = FEEDBACK_IDLE_BG;
     button.disabled = false;
     delete button._originalText;
     delete button._feedbackTimer;
-  }, 2000);
+  }, FEEDBACK_RESET_MS);
 }
 
 async function getMode() {
@@ -585,21 +602,29 @@ function subModesFor(mode) {
   return mode === 'both' ? ['original', 'convert'] : [mode];
 }
 
+// Promise.allSettled is used everywhere so we get per-mode results without a
+// thrown exception triggering a silent fallback (which previously confused
+// users: a file would still land while the button said "Failed").
 async function downloadFile(item, button) {
   const mode = await getMode();
   if (!mode) return;
   const subModes = subModesFor(mode);
 
-  try {
-    if (subModes.includes('convert')) showFeedback(button, t.preparingConverter);
-    const results = await Promise.all(subModes.map(m => sendDownload(item, m)));
-    const allOk = results.every(r => r?.ok);
-    showFeedback(button, allOk ? t.downloaded : t.failed, allOk);
-  } catch (error) {
-    logError('Download failed:', error);
-    showFeedback(button, t.failed, false);
-    // Fallback: at least try to save the original.
-    try { await sendDownload(item, 'original'); } catch {}
+  if (subModes.includes('convert')) showFeedback(button, t.preparingConverter, 'progress');
+
+  const settled = await Promise.allSettled(subModes.map(m => sendDownload(item, m)));
+  const okCount = settled.filter(s => s.status === 'fulfilled' && s.value?.ok).length;
+
+  if (okCount === subModes.length) {
+    showFeedback(button, t.downloaded, 'success');
+  } else if (okCount === 0) {
+    if (settled.find(s => s.status === 'rejected')) {
+      logError('Download failed:', settled.find(s => s.status === 'rejected').reason);
+    }
+    showFeedback(button, t.failed, 'error');
+  } else {
+    // Partial: only meaningful in `both` mode when one sub-mode succeeded.
+    showFeedback(button, `${okCount}/${subModes.length} ${t.downloaded}`, 'partial');
   }
 }
 
@@ -609,22 +634,23 @@ async function downloadAll(items, button) {
   const subModes = subModesFor(mode);
   const folder = batchFolderName(location.hostname, pageTitle);
 
-  let ok = 0;
-  for (const item of items) {
-    try {
-      const results = await Promise.all(subModes.map(m => sendDownload(item, m, folder)));
-      if (results.every(r => r?.ok)) ok++;
-    } catch { /* counted as fail */ }
+  let okItems = 0;
+  for (let i = 0; i < items.length; i++) {
+    // Per-item progress so a long batch doesn't look frozen.
+    showFeedback(button, `${i + 1}/${items.length}`, 'progress');
+    const settled = await Promise.allSettled(
+      subModes.map(m => sendDownload(items[i], m, folder))
+    );
+    if (settled.every(s => s.status === 'fulfilled' && s.value?.ok)) okItems++;
   }
 
-  if (ok > 0) {
-    showFeedback(button, `${ok}/${items.length} ${t.downloaded}`);
+  const summary = `${okItems}/${items.length} ${t.downloaded}`;
+  if (okItems === items.length) {
+    showFeedback(button, summary, 'success');
+  } else if (okItems === 0) {
+    showFeedback(button, t.failed, 'error');
   } else {
-    showFeedback(button, t.failed, false);
-    // Fallback: retry all as original (still grouped in the same folder).
-    for (const item of items) {
-      try { await sendDownload(item, 'original', folder); } catch {}
-    }
+    showFeedback(button, summary, 'partial');
   }
 }
 

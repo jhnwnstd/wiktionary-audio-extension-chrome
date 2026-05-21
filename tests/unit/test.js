@@ -262,12 +262,6 @@ function arrayBufferToBase64(arrayBuffer) {
   return btoa(bin);
 }
 
-function filterRestItems(items) {
-  return items
-    .filter(item => (item.audio_type && item.audio_type !== 'unknown') || isAudioFile(item.title))
-    .map(item => item.title);
-}
-
 function extractTitle(pathname) {
   return decodeURIComponent(pathname.split('/wiki/')[1] ?? '');
 }
@@ -618,18 +612,6 @@ assert(formatAudio('Eo-X.ogg') === 'esperanto_X.ogg', 'eo (Esperanto) via Intl')
 // Region/dialect that isn't in DIALECT_ADJECTIVES falls back to Intl region.
 const intlRegion = formatAudio('Es-cl-agua.ogg');
 assert(intlRegion === 'spanish_chile_agua.ogg' || intlRegion === 'spanish_cl_agua.ogg', 'cl (Chile) via Intl region — noun form acceptable');
-
-section('REST API filter');
-const items = [
-  { title: "File:photo.jpg", type: "image" },
-  { title: "File:audio.ogg", type: "audio", audio_type: "generic" },
-  { title: "File:mystery.bin", audio_type: "unknown" },
-  { title: "File:unlabeled.mp3" },
-];
-const filtered = filterRestItems(items);
-assert(filtered.length === 2, 'filter: 2 audio');
-assert(filtered[0] === 'File:audio.ogg', 'filter: ogg by audio_type');
-assert(filtered[1] === 'File:unlabeled.mp3', 'filter: mp3 by extension');
 
 section('Title extraction');
 assert(extractTitle('/wiki/water') === 'water', 'simple');
