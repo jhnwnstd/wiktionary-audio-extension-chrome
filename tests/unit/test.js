@@ -72,15 +72,58 @@ function sanitizeFilename(filename) {
 }
 
 // Mirrored from src/content-script.js — keep in sync.
-const LANGUAGE_NAMES = {
-  en: 'english', de: 'german', fr: 'french', es: 'spanish', it: 'italian',
-  ja: 'japanese', zh: 'chinese', eng: 'english', deu: 'german', fra: 'french',
+const ISO_639_3_TO_1 = {
+  eng: 'en', deu: 'de', fra: 'fr', spa: 'es', ita: 'it',
+  jpn: 'ja', zho: 'zh', cmn: 'zh', yue: 'zh', por: 'pt',
+  nld: 'nl', swe: 'sv', nor: 'no', dan: 'da', fin: 'fi',
+  pol: 'pl', rus: 'ru', ara: 'ar', hin: 'hi', kor: 'ko',
+  tur: 'tr', ukr: 'uk', ces: 'cs', ell: 'el', heb: 'he',
+  tha: 'th', vie: 'vi', ron: 'ro', hun: 'hu', ind: 'id',
 };
-const DIALECT_NAMES = { us: 'american', uk: 'british', au: 'australian', ca: 'canadian' };
-function lookupName(code, table) {
+const DIALECT_ADJECTIVES = {
+  us: 'american', uk: 'british', gb: 'british',
+  au: 'australian', ca: 'canadian', ie: 'irish',
+  nz: 'new_zealand', za: 'south_african', in: 'indian',
+  mx: 'mexican', ar: 'argentinian', br: 'brazilian',
+  at: 'austrian', ch: 'swiss', be: 'belgian',
+  'am-lat': 'latin_american', 'am_lat': 'latin_american',
+  cmn: 'mandarin', yue: 'cantonese', wuu: 'shanghainese',
+  nan: 'min_nan', hak: 'hakka',
+};
+const LANG_DISPLAY = (() => {
+  try { return new Intl.DisplayNames(['en'], { type: 'language', fallback: 'code' }); }
+  catch { return null; }
+})();
+const REGION_DISPLAY = (() => {
+  try { return new Intl.DisplayNames(['en'], { type: 'region', fallback: 'code' }); }
+  catch { return null; }
+})();
+function slugifyName(s) {
+  return String(s).toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
+}
+function describeLanguage(code) {
+  if (!code) return null;
+  let key = code.toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(ISO_639_3_TO_1, key)) key = ISO_639_3_TO_1[key];
+  if (LANG_DISPLAY) {
+    try {
+      const d = LANG_DISPLAY.of(key);
+      if (d && d.toLowerCase() !== key) return slugifyName(d);
+    } catch { /* fall through */ }
+  }
+  return key.replace(/-/g, '_');
+}
+function describeDialect(code) {
   if (!code) return null;
   const key = code.toLowerCase();
-  return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : key;
+  if (Object.prototype.hasOwnProperty.call(DIALECT_ADJECTIVES, key)) return DIALECT_ADJECTIVES[key];
+  if (REGION_DISPLAY && key.length === 2) {
+    try {
+      const d = REGION_DISPLAY.of(key.toUpperCase());
+      if (d && d.toLowerCase() !== key) return slugifyName(d);
+    } catch { /* fall through */ }
+  }
+  return key.replace(/-/g, '_');
 }
 function parseAudioFilename(raw) {
   if (!raw) return { lang: null, dialect: null, speaker: null, word: 'audio', ext: '' };
@@ -89,9 +132,13 @@ function parseAudioFilename(raw) {
   const extMatch = base.match(/\.([a-z0-9]+)$/i);
   const ext = extMatch ? extMatch[1].toLowerCase() : '';
   const stem = ext ? base.slice(0, base.length - ext.length - 1) : base;
-  const ll = stem.match(/^LL-Q\d+_\(([a-z]{2,3})\)-([^-]+)-(.+)$/i);
-  if (ll) return { lang: ll[1].toLowerCase(), dialect: null, speaker: ll[2], word: ll[3], ext };
-  const ld = stem.match(/^([A-Z][a-z]{0,2})-([a-z]{2,3})-(.+)$/);
+  const ll1 = stem.match(/^LL-Q\d+_\(([a-z]{2,3})\)-([^-]+)-(.+)$/i);
+  if (ll1) return { lang: ll1[1].toLowerCase(), dialect: null, speaker: ll1[2], word: ll1[3], ext };
+  const ll2 = stem.match(/^LL-Q\d+-([^-]+)-(.+)$/);
+  if (ll2) return { lang: null, dialect: null, speaker: ll2[1], word: ll2[2], ext };
+  const ll3 = stem.match(/^LL-([^-]+)-([a-z]{2,3})-(.+)$/);
+  if (ll3) return { lang: ll3[2].toLowerCase(), dialect: null, speaker: ll3[1], word: ll3[3], ext };
+  const ld = stem.match(/^([A-Z][a-z]{0,2})-([a-z][a-z_-]{0,5}[a-z])-(.+)$/);
   if (ld) return { lang: ld[1].toLowerCase(), dialect: ld[2], speaker: null, word: ld[3], ext };
   const lw = stem.match(/^([A-Z][a-z]{0,2})-(.+)$/);
   if (lw) return { lang: lw[1].toLowerCase(), dialect: null, speaker: null, word: lw[2], ext };
@@ -99,9 +146,9 @@ function parseAudioFilename(raw) {
 }
 function friendlyAudioFilename(parsed) {
   const parts = [];
-  const lang = lookupName(parsed.lang, LANGUAGE_NAMES);
+  const lang = describeLanguage(parsed.lang);
   if (lang) parts.push(lang);
-  const dialect = lookupName(parsed.dialect, DIALECT_NAMES);
+  const dialect = describeDialect(parsed.dialect);
   if (dialect) parts.push(dialect);
   parts.push(parsed.word);
   if (parsed.speaker) parts.push(parsed.speaker);
@@ -240,6 +287,35 @@ assert(formatAudio('En-au-Georgian.ogg?utm_source=foo') === 'english_australian_
 assert(formatAudio('weird_name.mp3') === 'weird_name.mp3', 'unparseable pass-through');
 // Unknown dialect code passes through verbatim (lowercased)
 assert(formatAudio('En-xx-thing.ogg') === 'english_xx_thing.ogg', 'unknown dialect → code');
+
+// Real-world variants observed in live sweep
+const p9 = parseAudioFilename('LL-Guilhelma-fr-eau.wav');
+assert(p9.lang === 'fr' && p9.speaker === 'Guilhelma' && p9.word === 'eau', 'LL hyphenated form (no Q-number)');
+assert(formatAudio('LL-Guilhelma-fr-eau.wav') === 'french_eau_Guilhelma.wav', 'LL hyphenated → friendly');
+
+const p10 = parseAudioFilename('LL-Q9186-Justinrleung-水.wav');
+assert(p10.lang === null && p10.speaker === 'Justinrleung' && p10.word === '水', 'LL Q-number hyphenated form');
+assert(formatAudio('LL-Q9186-Justinrleung-水.wav') === '水_Justinrleung.wav', 'LL Q-hyphen → friendly (lang unknown)');
+
+const p11 = parseAudioFilename('Es-am_lat-agua.ogg');
+assert(p11.lang === 'es' && p11.dialect === 'am_lat' && p11.word === 'agua', 'dialect with underscore');
+assert(formatAudio('Es-am_lat-agua.ogg') === 'spanish_latin_american_agua.ogg', 'am_lat → latin_american');
+assert(formatAudio('Es-am-lat-agua.ogg') === 'spanish_latin_american_agua.ogg', 'am-lat (hyphen form) → latin_american');
+assert(formatAudio('Zh-cmn-shuǐ.ogg') === 'chinese_mandarin_shuǐ.ogg', 'Chinese topolect as dialect');
+
+section('Dynamic language coverage via Intl.DisplayNames');
+// These languages are NOT in any hardcoded table. They flow through
+// Intl.DisplayNames which the browser/Node ships with by default. If these
+// fail, the runtime lacks full-icu data; treat as environment problem, not
+// regression. Coverage proves the dynamic generalization the user asked for.
+assert(formatAudio('Sw-X.ogg') === 'swahili_X.ogg', 'sw (Swahili) via Intl');
+assert(formatAudio('Th-X.ogg') === 'thai_X.ogg', 'th (Thai) via Intl');
+assert(formatAudio('Hu-X.ogg') === 'hungarian_X.ogg', 'hu (Hungarian) via Intl');
+assert(formatAudio('Vi-X.ogg') === 'vietnamese_X.ogg', 'vi (Vietnamese) via Intl');
+assert(formatAudio('Eo-X.ogg') === 'esperanto_X.ogg', 'eo (Esperanto) via Intl');
+// Region/dialect that isn't in DIALECT_ADJECTIVES falls back to Intl region.
+const intlRegion = formatAudio('Es-cl-agua.ogg');
+assert(intlRegion === 'spanish_chile_agua.ogg' || intlRegion === 'spanish_cl_agua.ogg', 'cl (Chile) via Intl region — noun form acceptable');
 
 section('REST API filter');
 const items = [

@@ -144,35 +144,77 @@ const t = i18n[currentLang];
 //   LL-Q1860_(eng)-Speaker-water.wav → eng, speaker=Speaker, word=water
 // Unparseable input falls back to the stem, so we never lose the file.
 
-const LANGUAGE_NAMES = {
-  // ISO 639-1 (Wiktionary's wikis use these for the audio prefix).
-  en: 'english', de: 'german', fr: 'french', es: 'spanish', it: 'italian',
-  ja: 'japanese', zh: 'chinese', pt: 'portuguese', nl: 'dutch', sv: 'swedish',
-  no: 'norwegian', da: 'danish', fi: 'finnish', pl: 'polish', ru: 'russian',
-  ar: 'arabic', hi: 'hindi', ko: 'korean', tr: 'turkish', uk: 'ukrainian',
-  cs: 'czech', el: 'greek', he: 'hebrew', th: 'thai', vi: 'vietnamese',
-  ro: 'romanian', hu: 'hungarian', id: 'indonesian', ms: 'malay', fa: 'persian',
-  ca: 'catalan', eu: 'basque', gl: 'galician', is: 'icelandic', ga: 'irish',
-  // ISO 639-3 (LinguaLibre embeds these in parens).
-  eng: 'english', deu: 'german', fra: 'french', spa: 'spanish', ita: 'italian',
-  jpn: 'japanese', zho: 'chinese', cmn: 'mandarin', yue: 'cantonese',
-  por: 'portuguese', nld: 'dutch', swe: 'swedish', nor: 'norwegian',
-  dan: 'danish', fin: 'finnish', pol: 'polish', rus: 'russian',
-  ara: 'arabic', hin: 'hindi', kor: 'korean', tur: 'turkish', ukr: 'ukrainian',
+// Language coverage is delegated to the browser's Intl.DisplayNames, which
+// already knows ~150 ISO 639-1 codes. We only carry a tiny 639-3 → 639-1 lift
+// table for the codes LinguaLibre uses in parens (`eng`, `deu`, etc.) since
+// Intl's language type doesn't always recognize 3-letter codes.
+const ISO_639_3_TO_1 = {
+  eng: 'en', deu: 'de', fra: 'fr', spa: 'es', ita: 'it',
+  jpn: 'ja', zho: 'zh', cmn: 'zh', yue: 'zh', por: 'pt',
+  nld: 'nl', swe: 'sv', nor: 'no', dan: 'da', fin: 'fi',
+  pol: 'pl', rus: 'ru', ara: 'ar', hin: 'hi', kor: 'ko',
+  tur: 'tr', ukr: 'uk', ces: 'cs', ell: 'el', heb: 'he',
+  tha: 'th', vie: 'vi', ron: 'ro', hun: 'hu', ind: 'id',
 };
 
-const DIALECT_NAMES = {
-  // English (the most common dialect-tagged language on Wiktionary).
-  us: 'american', uk: 'british', au: 'australian', ca: 'canadian',
-  ie: 'irish', nz: 'new_zealand', za: 'south_african', in: 'indian',
-  // Other regional tags — sparse intentionally; unknown codes pass through.
-  mx: 'mexican', ar: 'argentinian', be: 'belgian', at: 'austrian', ch: 'swiss',
+// Dialect adjectives. Intl returns nouns ("United States", "Australia") via
+// the region API, but filenames read more naturally with adjectives. This
+// table is intentionally short — anything not listed falls through to the
+// region API, then to the raw code.
+const DIALECT_ADJECTIVES = {
+  us: 'american', uk: 'british', gb: 'british',
+  au: 'australian', ca: 'canadian', ie: 'irish',
+  nz: 'new_zealand', za: 'south_african', in: 'indian',
+  mx: 'mexican', ar: 'argentinian', br: 'brazilian',
+  at: 'austrian', ch: 'swiss', be: 'belgian',
+  'am-lat': 'latin_american', 'am_lat': 'latin_american',
+  cmn: 'mandarin', yue: 'cantonese', wuu: 'shanghainese',
+  nan: 'min_nan', hak: 'hakka',
 };
 
-function lookupName(code, table) {
+const LANG_DISPLAY = (() => {
+  try { return new Intl.DisplayNames(['en'], { type: 'language', fallback: 'code' }); }
+  catch { return null; }
+})();
+const REGION_DISPLAY = (() => {
+  try { return new Intl.DisplayNames(['en'], { type: 'region', fallback: 'code' }); }
+  catch { return null; }
+})();
+
+function slugifyName(s) {
+  return String(s).toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function describeLanguage(code) {
+  if (!code) return null;
+  let key = code.toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(ISO_639_3_TO_1, key)) {
+    key = ISO_639_3_TO_1[key];
+  }
+  if (LANG_DISPLAY) {
+    try {
+      const display = LANG_DISPLAY.of(key);
+      if (display && display.toLowerCase() !== key) return slugifyName(display);
+    } catch { /* fall through */ }
+  }
+  return key.replace(/-/g, '_');
+}
+
+function describeDialect(code) {
   if (!code) return null;
   const key = code.toLowerCase();
-  return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : key;
+  if (Object.prototype.hasOwnProperty.call(DIALECT_ADJECTIVES, key)) {
+    return DIALECT_ADJECTIVES[key];
+  }
+  if (REGION_DISPLAY && key.length === 2) {
+    try {
+      const display = REGION_DISPLAY.of(key.toUpperCase());
+      if (display && display.toLowerCase() !== key) return slugifyName(display);
+    } catch { /* fall through */ }
+  }
+  return key.replace(/-/g, '_');
 }
 
 function parseAudioFilename(raw) {
@@ -188,14 +230,31 @@ function parseAudioFilename(raw) {
   const ext = extMatch ? extMatch[1].toLowerCase() : '';
   const stem = ext ? base.slice(0, base.length - ext.length - 1) : base;
 
-  // LinguaLibre: LL-Q<number>_(<lang3>)-<speaker>-<word>
-  const ll = stem.match(/^LL-Q\d+_\(([a-z]{2,3})\)-([^-]+)-(.+)$/i);
-  if (ll) {
-    return { lang: ll[1].toLowerCase(), dialect: null, speaker: ll[2], word: ll[3], ext };
+  // LinguaLibre parens-form: LL-Q<num>_(<lang3>)-<speaker>-<word>
+  const ll1 = stem.match(/^LL-Q\d+_\(([a-z]{2,3})\)-([^-]+)-(.+)$/i);
+  if (ll1) {
+    return { lang: ll1[1].toLowerCase(), dialect: null, speaker: ll1[2], word: ll1[3], ext };
   }
 
-  // <Lang>-<dialect>-<word>  e.g. En-au-Georgian
-  const langDialect = stem.match(/^([A-Z][a-z]{0,2})-([a-z]{2,3})-(.+)$/);
+  // LinguaLibre hyphenated Q-form: LL-Q<num>-<speaker>-<word>
+  // (Q-number references a Wikidata language; we leave lang null rather than
+  // bake in a Q-ID → ISO code map.)
+  const ll2 = stem.match(/^LL-Q\d+-([^-]+)-(.+)$/);
+  if (ll2) {
+    return { lang: null, dialect: null, speaker: ll2[1], word: ll2[2], ext };
+  }
+
+  // LinguaLibre speaker-first hyphen form: LL-<speaker>-<lang2or3>-<word>
+  const ll3 = stem.match(/^LL-([^-]+)-([a-z]{2,3})-(.+)$/);
+  if (ll3) {
+    return { lang: ll3[2].toLowerCase(), dialect: null, speaker: ll3[1], word: ll3[3], ext };
+  }
+
+  // <Lang>-<dialect>-<word>  e.g. En-au-Georgian, Es-am_lat-agua, Es-am-lat-agua
+  // Dialect tags may include underscores or hyphens internally (Latin American
+  // Spanish is tagged both ways). Greedy with backtracking yields the longest
+  // dialect that still leaves a valid `-word` tail.
+  const langDialect = stem.match(/^([A-Z][a-z]{0,2})-([a-z][a-z_-]{0,5}[a-z])-(.+)$/);
   if (langDialect) {
     return {
       lang: langDialect[1].toLowerCase(),
@@ -217,9 +276,9 @@ function parseAudioFilename(raw) {
 
 function friendlyAudioFilename(parsed) {
   const parts = [];
-  const lang = lookupName(parsed.lang, LANGUAGE_NAMES);
+  const lang = describeLanguage(parsed.lang);
   if (lang) parts.push(lang);
-  const dialect = lookupName(parsed.dialect, DIALECT_NAMES);
+  const dialect = describeDialect(parsed.dialect);
   if (dialect) parts.push(dialect);
   parts.push(parsed.word);
   // Speaker disambiguator (LinguaLibre) so multiple speakers don't collide.

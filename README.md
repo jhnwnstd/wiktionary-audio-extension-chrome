@@ -25,7 +25,7 @@ This is a zero build extension. Chrome loads `src/` directly.
 
 ## Usage
 
-1. Open a Wiktionary entry, such as `https://en.wiktionary.org/wiki/friendo`.
+1. Open a Wiktionary entry, such as [https://en.wiktionary.org/wiki/friendo](https://en.wiktionary.org/wiki/friendo).
 2. Open the extension popup.
 3. Choose Original or Convert.
 4. Use the page panel to download one file or all files.
