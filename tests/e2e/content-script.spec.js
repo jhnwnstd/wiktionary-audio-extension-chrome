@@ -92,10 +92,12 @@ test.describe('content script audio discovery', () => {
     await expect(page.getByTestId('wad-panel')).toBeVisible();
     await expect(page.getByTestId('wad-audio-item')).toHaveCount(2);
     await expect(page.getByTestId('wad-download-all')).toBeVisible();
-    // Parser → friendly format flowing through end-to-end:
-    // File:En-us-water.ogg → english_american_water.ogg
-    await expect(page.getByTestId('wad-audio-filename').first()).toHaveText('english_american_water.ogg');
-    await expect(page.getByTestId('wad-audio-filename').nth(1)).toHaveText('english_british_water.ogg');
+    // Parser → human-readable display flowing through end-to-end.
+    // Source File:En-us-water.ogg becomes:
+    //   download name: english_american_water.ogg (used by chrome.downloads)
+    //   panel display: English American 'water' .ogg
+    await expect(page.getByTestId('wad-audio-filename').first()).toHaveText("English American 'water' .ogg");
+    await expect(page.getByTestId('wad-audio-filename').nth(1)).toHaveText("English British 'water' .ogg");
   });
 
   test('falls back to Action API generator=images when REST returns nothing', async () => {

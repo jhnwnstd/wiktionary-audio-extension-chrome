@@ -32,12 +32,13 @@ test.describe('popup', () => {
     await context.close();
   });
 
-  test('renders both mode radios with Original selected by default', async () => {
+  test('renders all three mode radios with Original selected by default', async () => {
     const page = await context.newPage();
     await page.goto(`chrome-extension://${extensionId}/popup.html`);
 
     await expect(page.getByTestId('wad-mode-original')).toBeVisible();
     await expect(page.getByTestId('wad-mode-convert')).toBeVisible();
+    await expect(page.getByTestId('wad-mode-both')).toBeVisible();
     await expect(page.getByTestId('wad-mode-original')).toBeChecked();
   });
 
@@ -47,11 +48,34 @@ test.describe('popup', () => {
 
     await page.getByTestId('wad-mode-convert').check();
 
-    // Wait for "Settings saved!" — confirms chrome.storage.sync.set completed.
-    await expect(page.locator('#status')).toContainText('Settings saved');
+    // Wait for status confirmation — proves chrome.storage.sync.set completed.
+    await expect(page.locator('#status')).toContainText(/Saved/);
 
     await page.reload();
 
+    await expect(page.getByTestId('wad-mode-convert')).toBeChecked();
+  });
+
+  test('persists Both selection across reload', async () => {
+    const page = await context.newPage();
+    await page.goto(`chrome-extension://${extensionId}/popup.html`);
+
+    await page.getByTestId('wad-mode-both').check();
+    await expect(page.locator('#status')).toContainText(/Saved/);
+
+    await page.reload();
+
+    await expect(page.getByTestId('wad-mode-both')).toBeChecked();
+  });
+
+  test('clicking anywhere in the radio-container row selects the radio', async () => {
+    const page = await context.newPage();
+    await page.goto(`chrome-extension://${extensionId}/popup.html`);
+
+    // Click on the text span (not the radio dot) — this verifies the whole
+    // <label class="radio-container"> is the click target, which is the fix
+    // for the "had to click twice" UX bug.
+    await page.getByTestId('wad-mode-convert').locator('..').locator('span.radio-label').click();
     await expect(page.getByTestId('wad-mode-convert')).toBeChecked();
   });
 });

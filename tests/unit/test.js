@@ -161,6 +161,27 @@ function friendlyAudioFilename(parsed) {
 }
 function formatAudio(raw) { return friendlyAudioFilename(parseAudioFilename(raw)); }
 
+function titleCasePart(s) {
+  if (!s) return s;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+function humanReadableName(parsed, originalFilename) {
+  if (!parsed.lang && !parsed.dialect && !parsed.speaker) return originalFilename;
+  const parts = [];
+  if (parsed.lang) {
+    const lang = describeLanguage(parsed.lang);
+    if (lang) parts.push(lang.split('-').map(titleCasePart).join(' '));
+  }
+  if (parsed.dialect) {
+    const dialect = describeDialect(parsed.dialect);
+    if (dialect) parts.push(dialect.split('-').map(titleCasePart).join(' '));
+  }
+  parts.push(`'${String(parsed.word).replace(/_/g, ' ')}'`);
+  if (parsed.speaker) parts.push(`by ${String(parsed.speaker).replace(/_/g, ' ')}`);
+  return parts.join(' ') + (parsed.ext ? ` .${parsed.ext}` : '');
+}
+function humanReadable(raw) { return humanReadableName(parseAudioFilename(raw), raw); }
+
 function arrayBufferToBase64(arrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
   try {
@@ -318,6 +339,21 @@ assert(
 );
 // Multi-word region from Intl (e.g., New Zealand) stays as a single field with `-`.
 assert(formatAudio('En-nz-kia_ora.ogg') === 'english_new-zealand_kia-ora.ogg', 'nz → new-zealand; word underscore → hyphen');
+
+section('Human-readable panel display');
+assert(humanReadable('En-au-friendo.ogg') === "English Australian 'friendo' .ogg", 'En-au-friendo → display');
+assert(humanReadable('En-us-water.ogg') === "English American 'water' .ogg", 'En-us-water → display');
+assert(humanReadable('De-Wasser.ogg') === "German 'Wasser' .ogg", 'De-Wasser (no dialect) → display');
+assert(humanReadable('LL-Q1860_(eng)-Stebbington-water.wav') === "English 'water' by Stebbington .wav", 'LL parens form → display with speaker');
+assert(humanReadable('LL-Guilhelma-fr-eau.wav') === "French 'eau' by Guilhelma .wav", 'LL hyphen form → display with speaker');
+assert(humanReadable('Es-am_lat-agua.ogg') === "Spanish Latin American 'agua' .ogg", 'compound dialect → Title Case with space');
+assert(humanReadable('BY-Wasser.ogg') === 'BY-Wasser.ogg', 'unparseable → original filename verbatim');
+assert(humanReadable('weird_name.mp3') === 'weird_name.mp3', 'unparseable with underscore → original verbatim');
+assert(
+  humanReadable('LL-Q1860_(eng)-Naomi_Persephone_Amethyst-cat.wav') === "English 'cat' by Naomi Persephone Amethyst .wav",
+  'speaker underscores → spaces in display'
+);
+assert(humanReadable('Zh-cmn-shuǐ.ogg') === "Chinese Mandarin 'shuǐ' .ogg", 'Chinese topolect dialect → display');
 
 section('Dynamic language coverage via Intl.DisplayNames');
 // These languages are NOT in any hardcoded table. They flow through

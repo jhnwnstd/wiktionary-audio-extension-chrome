@@ -305,6 +305,38 @@ function formatAudio(rawFilename) {
   return friendlyAudioFilename(parseAudioFilename(rawFilename));
 }
 
+// Human-readable display string for the on-page panel. Same parsed fields as
+// the download name, but rendered for humans: title-cased language and
+// dialect, word in single quotes, optional speaker, extension separated.
+//   En-au-friendo.ogg                  → English Australian 'friendo' .ogg
+//   De-Wasser.ogg                      → German 'Wasser' .ogg
+//   LL-Q1860_(eng)-Stebbington-water   → English 'water' by Stebbington .wav
+//   Unparseable input                  → original filename, verbatim
+function titleCasePart(s) {
+  if (!s) return s;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function humanReadableName(parsed, originalFilename) {
+  if (!parsed.lang && !parsed.dialect && !parsed.speaker) {
+    return originalFilename;
+  }
+  const parts = [];
+  if (parsed.lang) {
+    const lang = describeLanguage(parsed.lang);
+    if (lang) parts.push(lang.split('-').map(titleCasePart).join(' '));
+  }
+  if (parsed.dialect) {
+    const dialect = describeDialect(parsed.dialect);
+    if (dialect) parts.push(dialect.split('-').map(titleCasePart).join(' '));
+  }
+  parts.push(`'${String(parsed.word).replace(/_/g, ' ')}'`);
+  if (parsed.speaker) {
+    parts.push(`by ${String(parsed.speaker).replace(/_/g, ' ')}`);
+  }
+  return parts.join(' ') + (parsed.ext ? ` .${parsed.ext}` : '');
+}
+
 function escapeHtml(s) {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -389,7 +421,7 @@ async function sendDownload(item, mode) {
   return safeSendMessage({
     type: 'DOWNLOAD_AUDIO',
     url: item.url,
-    originalFilename: item.displayName || item.filename,
+    originalFilename: item.downloadName || item.filename,
     mode
   }, { timeoutMs });
 }
@@ -420,17 +452,26 @@ async function getMode() {
   return mode;
 }
 
+// Map UI mode to one or more concrete send-download modes. Mode 'both' fans
+// out to original + convert in parallel.
+function subModesFor(mode) {
+  return mode === 'both' ? ['original', 'convert'] : [mode];
+}
+
 async function downloadFile(item, button) {
   const mode = await getMode();
   if (!mode) return;
+  const subModes = subModesFor(mode);
 
   try {
-    if (mode === 'convert') showFeedback(button, t.preparingConverter);
-    const response = await sendDownload(item, mode);
-    showFeedback(button, response?.ok ? `✓ ${t.downloaded}` : `✗ ${t.failed}`, response?.ok);
+    if (subModes.includes('convert')) showFeedback(button, t.preparingConverter);
+    const results = await Promise.all(subModes.map(m => sendDownload(item, m)));
+    const allOk = results.every(r => r?.ok);
+    showFeedback(button, allOk ? `✓ ${t.downloaded}` : `✗ ${t.failed}`, allOk);
   } catch (error) {
     logError('Download failed:', error);
     showFeedback(button, `✗ ${t.failed}`, false);
+    // Fallback: at least try to save the original.
     try { await sendDownload(item, 'original'); } catch {}
   }
 }
@@ -438,12 +479,13 @@ async function downloadFile(item, button) {
 async function downloadAll(items, button) {
   const mode = await getMode();
   if (!mode) return;
+  const subModes = subModesFor(mode);
 
   let ok = 0;
   for (const item of items) {
     try {
-      const res = await sendDownload(item, mode);
-      if (res?.ok) ok++;
+      const results = await Promise.all(subModes.map(m => sendDownload(item, m)));
+      if (results.every(r => r?.ok)) ok++;
     } catch { /* counted as fail */ }
   }
 
@@ -526,8 +568,14 @@ function createUI(items) {
     // Fallback: direct Action API scan
     if (!audioFiles.length) audioFiles = await discoverViaActionApi(pageTitle);
 
-    // Compute friendly display name once; UI + sendDownload both read it.
-    audioFiles.forEach(item => { item.displayName = formatAudio(item.filename); });
+    // Precompute names once per item:
+    //   downloadName — sanitized friendly filename used for the actual save
+    //   displayName  — human-readable form for the on-page panel
+    audioFiles.forEach(item => {
+      const parsed = parseAudioFilename(item.filename);
+      item.downloadName = friendlyAudioFilename(parsed);
+      item.displayName = humanReadableName(parsed, item.filename);
+    });
 
     if (audioFiles.length) createUI(audioFiles);
   } catch (error) {

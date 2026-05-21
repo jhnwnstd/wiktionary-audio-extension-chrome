@@ -8,7 +8,8 @@ Download the original audio file, or convert it to WAV locally with vendored FFm
 
 - Finds pronunciation audio across Wiktionary language editions  
 - Supports Original mode for source files such as OGG, Opus, and MP3  
-- Supports Convert mode for 16 bit PCM WAV, mono, 48 kHz  
+- Supports Convert mode for a local WAV copy, 16 bit PCM, mono, 48 kHz  
+- Supports Save Both mode for the original and the WAV copy in one click  
 - Supports individual and batch downloads  
 - Runs conversion locally in the browser  
 

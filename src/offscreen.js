@@ -56,21 +56,14 @@ async function cleanupFiles(...names) {
   }
 }
 
-// Conversion target: 16-bit PCM WAV, mono, 48 kHz. Research-friendly export
-// for analysis tools like Praat — NOT an enhancement step. Lossy source audio
-// (most Wiktionary files are Opus/OGG) cannot be restored to higher fidelity.
+// The vendored FFmpeg.wasm build is a stripped single-thread MV3 build.
+// Do not pass -threads or -af filters here. They are rejected by this build,
+// and a failed exec corrupts the worker so subsequent execs fail too.
 //
-// No hidden processing: no normalization, no AGC, no denoise, no gain change,
-// no silence trim. FFmpeg's default resampler handles input rate → 48 kHz.
-//
-// We tested adding `-af aresample=dither_method=triangular` for explicit
-// dithering on bit-depth reduction, but the vendored single-thread FFmpeg.wasm
-// build (src/vendor/ffmpeg/core/) rejects the filter — likely lavfi/aresample
-// is not compiled in. If a future vendored build includes it, prepend
-// `'-af', 'aresample=dither_method=triangular',` ahead of `-c:a`.
-//
-// `-threads 1` is also rejected by this build; threading is already pinned
-// to single-thread by the core itself.
+// Keep conversion explicit and conservative. Output is 16-bit PCM WAV, mono,
+// 48 kHz. No normalization, no gain change, no denoise, no silence trim.
+// Lossy source audio cannot be restored to higher fidelity; this command
+// only standardizes the container and rate for analysis tools.
 async function runTranscode(inName, outName) {
   const args = [
     '-i', inName,

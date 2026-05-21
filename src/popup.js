@@ -1,4 +1,4 @@
-// popup.js — Settings for download mode (Original / Convert)
+// popup.js — Settings for download mode (Original / Convert / Both)
 
 const radios = [...document.querySelectorAll('input[name="mode"]')];
 const wavWarning = document.getElementById('wav-warning');
@@ -10,10 +10,11 @@ function getSelectedMode() {
 }
 
 function updateWarningVisibility() {
-  wavWarning.classList.toggle('show', getSelectedMode() === 'convert');
+  const mode = getSelectedMode();
+  wavWarning.classList.toggle('show', mode === 'convert' || mode === 'both');
 }
 
-function showStatus(message, type, duration = 2000) {
+function showStatus(message, type, duration = 1500) {
   statusEl.textContent = message;
   statusEl.className = `status ${type}`;
   statusEl.style.display = 'block';
@@ -35,17 +36,17 @@ async function loadSettings() {
   }
 }
 
+// Apply UI changes synchronously for snappy click feedback, then persist
+// asynchronously. Skipping the previous storage.get round-trip removes a
+// source of perceived input lag.
 async function saveSettings() {
+  const mode = getSelectedMode();
+  updateWarningVisibility();
   try {
-    const mode = getSelectedMode();
-    const { mode: current = 'original' } = await chrome.storage.sync.get({ mode: 'original' });
-    if (mode !== current) {
-      await chrome.storage.sync.set({ mode });
-      showStatus('Settings saved!', 'success');
-    }
-    updateWarningVisibility();
+    await chrome.storage.sync.set({ mode });
+    showStatus('Saved', 'success');
   } catch {
-    showStatus('Failed to save settings', 'error', 3000);
+    showStatus('Failed to save', 'error', 3000);
   }
 }
 

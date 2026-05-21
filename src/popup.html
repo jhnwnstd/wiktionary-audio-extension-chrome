@@ -151,19 +151,24 @@
     </div>
 
     <div role="radiogroup" aria-labelledby="format-label" aria-describedby="format-desc">
-      <div class="radio-container">
+      <label class="radio-container">
         <input type="radio" name="mode" value="original" id="original" data-testid="wad-mode-original">
-        <label class="radio-label" for="original">Save original file</label>
-      </div>
+        <span class="radio-label">Save original file</span>
+      </label>
 
-      <div class="radio-container">
+      <label class="radio-container">
         <input type="radio" name="mode" value="convert" id="convert" data-testid="wad-mode-convert">
-        <label class="radio-label" for="convert">Convert to WAV copy (for analysis)</label>
-      </div>
+        <span class="radio-label">Save converted WAV file</span>
+      </label>
+
+      <label class="radio-container">
+        <input type="radio" name="mode" value="both" id="both" data-testid="wad-mode-both">
+        <span class="radio-label">Save both</span>
+      </label>
     </div>
 
     <div class="warning" id="wav-warning">
-      Exports a local WAV copy (16-bit PCM, mono, 48 kHz) suitable for tools like Praat. Source quality is preserved, not enhanced — lossy originals cannot be restored.
+      16-bit PCM WAV, mono, 48 kHz. Local conversion only.
     </div>
   </div>
 
