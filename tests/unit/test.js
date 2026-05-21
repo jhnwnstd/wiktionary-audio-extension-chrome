@@ -41,10 +41,11 @@ function audioItemsFromPages(pages) {
   for (const page of pages) {
     const info = page?.imageinfo?.[0];
     if (info?.url && isAudioInfo(info)) {
+      const cleanTail = (info.url.split('/').pop() || 'audio').split('?')[0].split('#')[0];
       results.push({
         title: page.title,
         url: info.url,
-        filename: decodeURIComponent(info.url.split('/').pop() || 'audio'),
+        filename: decodeURIComponent(cleanTail),
       });
     }
   }
@@ -100,8 +101,14 @@ const DIALECT_ADJECTIVES = {
   mx: 'mexican', ar: 'argentinian', br: 'brazilian',
   at: 'austrian', ch: 'swiss', be: 'belgian',
   'am-lat': 'latin-american', 'am_lat': 'latin-american',
+  inlandnorth: 'inland-north', gen: 'general', gam: 'general-american',
   cmn: 'mandarin', yue: 'cantonese', wuu: 'shanghainese',
   nan: 'min-nan', hak: 'hakka',
+  qc: 'quebec',
+};
+const LANG_OVERRIDES = {
+  qc: 'quebec-french',
+  jer: 'jèrriais',
 };
 const LANG_DISPLAY = (() => {
   try { return new Intl.DisplayNames(['en'], { type: 'language', fallback: 'code' }); }
@@ -121,6 +128,7 @@ function normalizeFieldValue(v) {
 function describeLanguage(code) {
   if (!code) return null;
   let key = code.toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(LANG_OVERRIDES, key)) return LANG_OVERRIDES[key];
   if (Object.prototype.hasOwnProperty.call(ISO_639_3_TO_1, key)) key = ISO_639_3_TO_1[key];
   if (LANG_DISPLAY) {
     try {
@@ -134,6 +142,20 @@ function describeDialect(code) {
   if (!code) return null;
   const key = code.toLowerCase();
   if (Object.prototype.hasOwnProperty.call(DIALECT_ADJECTIVES, key)) return DIALECT_ADJECTIVES[key];
+  if (key.includes('-') || key.includes('_')) {
+    const parts = key.split(/[-_]/);
+    const mapped = parts.map((p) => {
+      if (Object.prototype.hasOwnProperty.call(DIALECT_ADJECTIVES, p)) return DIALECT_ADJECTIVES[p];
+      if (REGION_DISPLAY && p.length === 2) {
+        try {
+          const d = REGION_DISPLAY.of(p.toUpperCase());
+          if (d && d.toLowerCase() !== p) return slugifyName(d);
+        } catch { /* fall through */ }
+      }
+      return p;
+    });
+    return mapped.join('-');
+  }
   if (REGION_DISPLAY && key.length === 2) {
     try {
       const d = REGION_DISPLAY.of(key.toUpperCase());
@@ -169,6 +191,11 @@ function parseAudioFilename(raw, knownWord = null) {
   }
   const ll3 = stem.match(/^LL-(.+)-([a-z]{2,3})-([^-]+)$/);
   if (ll3) return { lang: ll3[2].toLowerCase(), dialect: null, speaker: ll3[1], word: ll3[3], ext };
+  if (wordAnchor) {
+    const wordTail = `(?:${wordAnchor}|${wordAnchor}-[a-z0-9]{1,12})`;
+    const m = stem.match(new RegExp(`^([A-Z][a-z]{0,2})-([a-z][a-z_-]{0,28}[a-z])-(${wordTail})$`));
+    if (m) return { lang: m[1].toLowerCase(), dialect: m[2], speaker: null, word: m[3], ext };
+  }
   const ld = stem.match(/^([A-Z][a-z]{0,2})-([a-z][a-z_-]{0,5}[a-z])-(.+)$/);
   if (ld) return { lang: ld[1].toLowerCase(), dialect: ld[2], speaker: null, word: ld[3], ext };
   const lw = stem.match(/^([A-Z][a-z]{0,2})-(.+)$/);
@@ -474,6 +501,78 @@ assert(
 // Non-LL cases unaffected by the new regex.
 assert(parseAudioFilename('En-au-Georgian.ogg', 'Georgian').dialect === 'au', 'non-LL parser still works with anchor arg');
 assert(parseAudioFilename('De-Wasser.ogg').lang === 'de', 'non-LL parser still works without anchor arg');
+
+section('Findings from real Wiktionary data');
+// Quebec French — region used as language prefix, no separate lang code.
+assert(formatAudio('Qc-café.ogg') === 'quebec-french_café.ogg', 'Qc → quebec-french in filename');
+assert(humanReadable('Qc-café.ogg') === "Quebec French 'café' .ogg", 'Qc → Quebec French in display');
+
+// Jèrriais — variety with its own Wiktionary entry but no ISO 639-1 code.
+assert(formatAudio('Jer-cat.ogg') === 'jèrriais_cat.ogg', 'Jer → jèrriais in filename');
+assert(humanReadable('Jer-cat.ogg') === "Jèrriais 'cat' .ogg", 'Jer → Jèrriais in display');
+
+// Long regional dialect tag — only resolves cleanly with knownWord anchor.
+// Without context, the dialect is capped at 7 chars to avoid greedy over-match
+// in the common "En-us-hello-4" case (where us-hello would otherwise be eaten).
+const inlandRaw = parseAudioFilename('En-inlandnorth-cat.ogg');
+assert(
+  inlandRaw.lang === 'en' && inlandRaw.word === 'inlandnorth-cat' && !inlandRaw.dialect,
+  'without anchor: long dialect not recognized (falls through to word)'
+);
+const inlandAnchored = parseAudioFilename('En-inlandnorth-cat.ogg', 'cat');
+assert(
+  inlandAnchored.dialect === 'inlandnorth' && inlandAnchored.word === 'cat',
+  'with anchor: inlandnorth parsed as dialect, cat as word'
+);
+assert(
+  friendlyAudioFilename(inlandAnchored) === 'english_inland-north_cat.ogg',
+  'anchored: inlandnorth → inland-north in filename'
+);
+assert(
+  humanReadableName(inlandAnchored, 'En-inlandnorth-cat.ogg') === "English Inland North 'cat' .ogg",
+  'anchored: inlandnorth → Inland North in display'
+);
+
+// Compound dialect (us-inlandnorth) — needs anchor + compound-split.
+const compoundDialect = parseAudioFilename('En-us-inlandnorth-cat.ogg', 'cat');
+assert(
+  compoundDialect.dialect === 'us-inlandnorth' && compoundDialect.word === 'cat',
+  'anchor resolves us-inlandnorth as compound dialect'
+);
+assert(
+  friendlyAudioFilename(compoundDialect) === 'english_american-inland-north_cat.ogg',
+  'compound dialect: split + lookup each piece'
+);
+assert(
+  humanReadableName(compoundDialect, 'En-us-inlandnorth-cat.ogg') === "English American Inland North 'cat' .ogg",
+  'compound dialect → multi-word display'
+);
+
+// Variant-indexed file (En-us-hello-4) — anchor accepts pageTitle-<suffix>
+// so dialect stays at `us` and the suffix rides on the word.
+const variantAnchored = parseAudioFilename('En-us-hello-4.ogg', 'hello');
+assert(
+  variantAnchored.dialect === 'us' && variantAnchored.word === 'hello-4',
+  'variant suffix: dialect=us, word=hello-4 (kept together)'
+);
+assert(
+  humanReadableName(variantAnchored, 'En-us-hello-4.ogg') === "English American 'hello-4' .ogg",
+  'variant suffix display'
+);
+
+// URL query string from Wikimedia API leaks should be stripped at the
+// discovery layer, not just at parser layer. Verify audioItemsFromPages
+// cleans the filename pulled from info.url.
+const trackedPages = [{
+  title: 'File:BY-Wasser.ogg',
+  imageinfo: [{
+    url: 'https://upload.wikimedia.org/x/BY-Wasser.ogg?utm_source=de.wiktionary.org&utm_campaign=imageinfo',
+    mime: 'application/ogg',
+    mediatype: 'AUDIO',
+  }],
+}];
+const cleaned = audioItemsFromPages(trackedPages);
+assert(cleaned.length === 1 && cleaned[0].filename === 'BY-Wasser.ogg', 'query string stripped from filename at discovery');
 
 section('Batch download folder grouping');
 assert(batchFolderName('en.wiktionary.org', 'water') === 'Wiktionary-en-water', 'en/water folder name');

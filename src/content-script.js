@@ -157,6 +157,17 @@ const ISO_639_3_TO_1 = {
   tha: 'th', vie: 'vi', ron: 'ro', hun: 'hu', ind: 'id',
 };
 
+// Overrides for codes that aren't standard ISO 639 (or that Intl resolves
+// poorly). These usually appear in Wiktionary as the file's language prefix
+// when the file is region-specific (Qc = Quebec French) or when the variety
+// has its own entry on Wiktionary even though it shares a parent language
+// (Jer = Jèrriais, a variety of Norman). Kept small — only verified from
+// real data in the live sweep.
+const LANG_OVERRIDES = {
+  qc: 'quebec-french',
+  jer: 'jèrriais',
+};
+
 // Dialect adjectives. Intl returns nouns ("United States", "Australia") via
 // the region API, but filenames read more naturally with adjectives. This
 // table is intentionally short — anything not listed falls through to the
@@ -172,8 +183,12 @@ const DIALECT_ADJECTIVES = {
   mx: 'mexican', ar: 'argentinian', br: 'brazilian',
   at: 'austrian', ch: 'swiss', be: 'belgian',
   'am-lat': 'latin-american', 'am_lat': 'latin-american',
+  // English regional tags seen in real Wiktionary audio.
+  inlandnorth: 'inland-north', gen: 'general', gam: 'general-american',
   cmn: 'mandarin', yue: 'cantonese', wuu: 'shanghainese',
   nan: 'min-nan', hak: 'hakka',
+  // Regional French.
+  qc: 'quebec',
 };
 
 const LANG_DISPLAY = (() => {
@@ -203,6 +218,9 @@ function normalizeFieldValue(v) {
 function describeLanguage(code) {
   if (!code) return null;
   let key = code.toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(LANG_OVERRIDES, key)) {
+    return LANG_OVERRIDES[key];
+  }
   if (Object.prototype.hasOwnProperty.call(ISO_639_3_TO_1, key)) {
     key = ISO_639_3_TO_1[key];
   }
@@ -220,6 +238,25 @@ function describeDialect(code) {
   const key = code.toLowerCase();
   if (Object.prototype.hasOwnProperty.call(DIALECT_ADJECTIVES, key)) {
     return DIALECT_ADJECTIVES[key];
+  }
+  // Compound dialects like `us-inlandnorth` resolve piece-by-piece:
+  // us → 'american', inlandnorth → 'inland-north', joined as
+  // 'american-inland-north'. Falls back to the raw piece when no mapping.
+  if (key.includes('-') || key.includes('_')) {
+    const parts = key.split(/[-_]/);
+    const mapped = parts.map((p) => {
+      if (Object.prototype.hasOwnProperty.call(DIALECT_ADJECTIVES, p)) {
+        return DIALECT_ADJECTIVES[p];
+      }
+      if (REGION_DISPLAY && p.length === 2) {
+        try {
+          const d = REGION_DISPLAY.of(p.toUpperCase());
+          if (d && d.toLowerCase() !== p) return slugifyName(d);
+        } catch { /* fall through */ }
+      }
+      return p;
+    });
+    return mapped.join('-');
   }
   if (REGION_DISPLAY && key.length === 2) {
     try {
@@ -289,10 +326,27 @@ function parseAudioFilename(raw, knownWord = null) {
     return { lang: ll3[2].toLowerCase(), dialect: null, speaker: ll3[1], word: ll3[3], ext };
   }
 
-  // <Lang>-<dialect>-<word>  e.g. En-au-Georgian, Es-am_lat-agua, Es-am-lat-agua
-  // Dialect tags may include underscores or hyphens internally (Latin American
-  // Spanish is tagged both ways). Greedy with backtracking yields the longest
-  // dialect that still leaves a valid `-word` tail.
+  // <Lang>-<dialect>-<word>. Two flavors, in priority order:
+  //
+  //   (a) Anchored: word must equal pageTitle (or pageTitle with a short
+  //       variant suffix like `-2`, `-fast`). This lets dialect be arbitrarily
+  //       long, which is what surfaces compound regional tags like
+  //       `us-inlandnorth` (American Inland North) without breaking the more
+  //       common `En-us-hello-4` case (variant index).
+  //
+  //   (b) Unanchored: dialect capped at 7 chars total. Handles the simple
+  //       case (En-au-Georgian, Es-am_lat-agua) without context.
+  if (wordAnchor) {
+    // Allow `pageTitle` or `pageTitle-<short-suffix>` to terminate the stem.
+    // The short-suffix branch handles variant-indexed recordings (hello-2,
+    // hello-fast) without losing context.
+    const wordTail = `(?:${wordAnchor}|${wordAnchor}-[a-z0-9]{1,12})`;
+    const re = new RegExp(`^([A-Z][a-z]{0,2})-([a-z][a-z_-]{0,28}[a-z])-(${wordTail})$`);
+    const m = stem.match(re);
+    if (m) {
+      return { lang: m[1].toLowerCase(), dialect: m[2], speaker: null, word: m[3], ext };
+    }
+  }
   const langDialect = stem.match(/^([A-Z][a-z]{0,2})-([a-z][a-z_-]{0,5}[a-z])-(.+)$/);
   if (langDialect) {
     return {
@@ -412,10 +466,14 @@ function audioItemsFromPages(pages) {
   for (const page of pages) {
     const info = page?.imageinfo?.[0];
     if (info?.url && isAudioInfo(info)) {
+      // Strip any URL query/fragment before extracting the filename so
+      // tracking junk (e.g. ?utm_source=... that Wikimedia attaches to some
+      // imageinfo URLs) doesn't leak into display or download names.
+      const cleanTail = (info.url.split('/').pop() || 'audio').split('?')[0].split('#')[0];
       results.push({
         title: page.title,
         url: info.url,
-        filename: decodeURIComponent(info.url.split('/').pop() || 'audio'),
+        filename: decodeURIComponent(cleanTail),
         mime: info.mime,
         size: info.size,
       });
