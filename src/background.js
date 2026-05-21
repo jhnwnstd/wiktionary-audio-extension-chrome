@@ -1,4 +1,4 @@
-// background.js — Service worker for Wiktionary audio downloads
+// background.js -- Service worker for Wiktionary audio downloads
 
 const DEBUG = false;
 const log = DEBUG ? console.log.bind(console) : () => {};
@@ -19,7 +19,7 @@ function arrayBufferToBase64(arrayBuffer) {
 // Cross-platform filename sanitizer covering the union of Windows, macOS, and
 // Linux filesystem restrictions. Preserves Unicode (e.g. 水, café) but enforces
 // a 255-byte UTF-8 cap, since most real filesystems use byte-length not
-// codepoint-length — a 100-character Chinese filename is ~300 bytes on disk.
+// codepoint-length -- a 100-character Chinese filename is ~300 bytes on disk.
 //
 // Rules enforced:
 //   * forbidden chars: < > : " / \ | ? * and control chars 0x00-0x1F
@@ -27,7 +27,7 @@ function arrayBufferToBase64(arrayBuffer) {
 //   * Windows forbids trailing space or period
 //   * leading dots stripped (avoids Unix hidden-file surprise)
 //   * 255-byte UTF-8 cap, preserving extension when possible
-//   * never empty — falls back to "audio"
+//   * never empty -- falls back to "audio"
 
 const WINDOWS_RESERVED_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
 const FORBIDDEN_CHARS_RE = /[<>:"/\\|?*\x00-\x1f]/g;
@@ -101,7 +101,7 @@ async function ensureOffscreen() {
       justification: 'Run ffmpeg.wasm for audio conversion'
     });
   } catch {
-    // Already exists — Chrome enforces single offscreen doc
+    // Already exists -- Chrome enforces single offscreen doc
   }
 
   // Retry ping up to 4 times (handles slow module loading after createDocument)
@@ -169,7 +169,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   (async () => {
     if (mode === 'convert') {
-      log('[Background] Converting:', originalFilename, folder ? `→ ${folder}/` : '');
+      log('[Background] Converting:', originalFilename, folder ? `-> ${folder}/` : '');
       const { filename, arrayBuffer } = await transcodeToWav(url, baseName);
       const base64 = arrayBufferToBase64(arrayBuffer);
       const dataUrl = `data:audio/wav;base64,${base64}`;
@@ -179,7 +179,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         saveAs: false
       });
     } else {
-      log('[Background] Downloading original:', originalFilename, folder ? `→ ${folder}/` : '');
+      log('[Background] Downloading original:', originalFilename, folder ? `-> ${folder}/` : '');
       await chrome.downloads.download({
         url,
         filename: pathWithFolder(folder, originalFilename)

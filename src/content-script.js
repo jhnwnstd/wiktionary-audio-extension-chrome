@@ -1,4 +1,4 @@
-// content-script.js — Wiktionary audio discovery, UI panel, download actions
+// content-script.js -- Wiktionary audio discovery, UI panel, download actions
 
 const DEBUG = false;
 const log = DEBUG ? console.log.bind(console) : () => {};
@@ -139,13 +139,13 @@ const t = i18n[currentLang];
 // name like `english_australian_Georgian.ogg` instead of `En-au-Georgian.ogg`.
 //
 // Patterns handled:
-//   En-au-Georgian.ogg              → en, dialect=au,  word=Georgian
-//   De-Wasser.ogg                   → de, word=Wasser
-//   LL-Q1860_(eng)-Speaker-water.wav → eng, speaker=Speaker, word=water
+//   En-au-Georgian.ogg              -> en, dialect=au,  word=Georgian
+//   De-Wasser.ogg                   -> de, word=Wasser
+//   LL-Q1860_(eng)-Speaker-water.wav -> eng, speaker=Speaker, word=water
 // Unparseable input falls back to the stem, so we never lose the file.
 
 // Language coverage is delegated to the browser's Intl.DisplayNames, which
-// already knows ~150 ISO 639-1 codes. We only carry a tiny 639-3 → 639-1 lift
+// already knows ~150 ISO 639-1 codes. We only carry a tiny 639-3 -> 639-1 lift
 // table for the codes LinguaLibre uses in parens (`eng`, `deu`, etc.) since
 // Intl's language type doesn't always recognize 3-letter codes.
 const ISO_639_3_TO_1 = {
@@ -161,7 +161,7 @@ const ISO_639_3_TO_1 = {
 // poorly). These usually appear in Wiktionary as the file's language prefix
 // when the file is region-specific (Qc = Quebec French) or when the variety
 // has its own entry on Wiktionary even though it shares a parent language
-// (Jer = Jèrriais, a variety of Norman). Kept small — only verified from
+// (Jer = Jèrriais, a variety of Norman). Kept small -- only verified from
 // real data in the live sweep.
 const LANG_OVERRIDES = {
   qc: 'quebec-french',
@@ -170,7 +170,7 @@ const LANG_OVERRIDES = {
 
 // Dialect adjectives. Intl returns nouns ("United States", "Australia") via
 // the region API, but filenames read more naturally with adjectives. This
-// table is intentionally short — anything not listed falls through to the
+// table is intentionally short -- anything not listed falls through to the
 // region API, then to the raw code.
 //
 // Separator convention: `-` joins words within a single field value; `_`
@@ -200,7 +200,7 @@ const REGION_DISPLAY = (() => {
   catch { return null; }
 })();
 
-// Within a single field, multi-word values use `-`. "United States" → "united-states".
+// Within a single field, multi-word values use `-`. "United States" -> "united-states".
 function slugifyName(s) {
   return String(s).toLowerCase()
     .replace(/[^a-z0-9-]+/g, '-')
@@ -240,7 +240,7 @@ function describeDialect(code) {
     return DIALECT_ADJECTIVES[key];
   }
   // Compound dialects like `us-inlandnorth` resolve piece-by-piece:
-  // us → 'american', inlandnorth → 'inland-north', joined as
+  // us -> 'american', inlandnorth -> 'inland-north', joined as
   // 'american-inland-north'. Falls back to the raw piece when no mapping.
   if (key.includes('-') || key.includes('_')) {
     const parts = key.split(/[-_]/);
@@ -272,7 +272,7 @@ function escapeRegex(s) {
 }
 
 // Parse a Wiktionary audio filename. The optional `knownWord` is the page
-// title (e.g. "water" or "well-known") — when supplied, the parser anchors
+// title (e.g. "water" or "well-known") -- when supplied, the parser anchors
 // the word to a trailing match of that title, which correctly handles both
 // hyphenated speakers ("Jérémy-Günther-Heinz Jähnick") and hyphenated words
 // ("well-known") in the same call. Without context, we assume speakers are
@@ -306,7 +306,7 @@ function parseAudioFilename(raw, knownWord = null) {
 
   // LinguaLibre hyphenated Q-form: LL-Q<num>-<speaker>-<word>
   // (Q-number references a Wikidata language; we leave lang null rather than
-  // bake in a Q-ID → ISO code map.)
+  // bake in a Q-ID -> ISO code map.)
   if (wordAnchor) {
     const m = stem.match(new RegExp(`^LL-Q\\d+-(.+)-(${wordAnchor})$`));
     if (m) return { lang: null, dialect: null, speaker: m[1], word: m[2], ext };
@@ -388,10 +388,10 @@ function formatAudio(rawFilename) {
 // Human-readable display string for the on-page panel. Same parsed fields as
 // the download name, but rendered for humans: title-cased language and
 // dialect, word in single quotes, optional speaker, extension separated.
-//   En-au-friendo.ogg                  → English Australian 'friendo' .ogg
-//   De-Wasser.ogg                      → German 'Wasser' .ogg
-//   LL-Q1860_(eng)-Stebbington-water   → English 'water' by Stebbington .wav
-//   Unparseable input                  → original filename, verbatim
+//   En-au-friendo.ogg                  -> English Australian 'friendo' .ogg
+//   De-Wasser.ogg                      -> German 'Wasser' .ogg
+//   LL-Q1860_(eng)-Stebbington-water   -> English 'water' by Stebbington .wav
+//   Unparseable input                  -> original filename, verbatim
 function titleCasePart(s) {
   if (!s) return s;
   return s.charAt(0).toUpperCase() + s.slice(1);
@@ -490,7 +490,7 @@ async function fetchJson(url) {
 
 // Discover all audio files attached to a page via Action API. Handles
 // generator continuation so long entries (e.g. fr/eau with 33+ items) aren't
-// truncated. formatversion=2 gives us pages as an array — cleaner than the
+// truncated. formatversion=2 gives us pages as an array -- cleaner than the
 // v1 object-keyed-by-pageid format.
 async function discoverAudio(title) {
   const baseParams = {
@@ -544,9 +544,9 @@ async function sendDownload(item, mode, folder) {
 
 // Subfolder name used when the user clicks Download All. Distinctive enough
 // to find in the Downloads folder and tied to the source page.
-//   en.wiktionary.org/wiki/water  → Wiktionary-en-water
-//   de.wiktionary.org/wiki/Wasser → Wiktionary-de-Wasser
-//   ja.wiktionary.org/wiki/水     → Wiktionary-ja-水
+//   en.wiktionary.org/wiki/water  -> Wiktionary-en-water
+//   de.wiktionary.org/wiki/Wasser -> Wiktionary-de-Wasser
+//   ja.wiktionary.org/wiki/水     -> Wiktionary-ja-水
 function batchFolderName(hostname, title) {
   const match = hostname.match(/^([a-z]{2,3})\.wiktionary\.org$/);
   const edition = match?.[1] || 'wiktionary';
@@ -765,8 +765,8 @@ function createUI(items) {
     const audioFiles = await discoverAudio(pageTitle);
 
     // Precompute names once per item:
-    //   downloadName — sanitized friendly filename used for the actual save
-    //   displayName  — human-readable form for the on-page panel
+    //   downloadName -- sanitized friendly filename used for the actual save
+    //   displayName  -- human-readable form for the on-page panel
     // Pass pageTitle as the word anchor so hyphenated speakers / compound
     // words (e.g. "well-known") both parse correctly.
     audioFiles.forEach(item => {

@@ -1,4 +1,4 @@
-// offscreen.js — FFmpeg.wasm audio conversion (MV3 module, CSP-safe)
+// offscreen.js -- FFmpeg.wasm audio conversion (MV3 module, CSP-safe)
 
 const DEBUG = false;
 const log = DEBUG ? console.log.bind(console) : () => {};
@@ -58,7 +58,7 @@ async function cleanupFiles(...names) {
 
 // Conversion profile pinned to the vendored FFmpeg.wasm core's capabilities.
 // We deliberately do NOT runtime-probe or fall back between commands inside
-// the worker — a failed `ffmpeg.exec` can poison the worker state and break
+// the worker -- a failed `ffmpeg.exec` can poison the worker state and break
 // subsequent execs. Instead this constant is the single source of truth; the
 // live convert test verifies it works against the vendored core.
 //

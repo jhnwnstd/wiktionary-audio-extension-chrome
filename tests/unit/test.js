@@ -23,7 +23,7 @@ function isAudioFile(filename, mimeType) {
   return typeof filename === 'string' && AUDIO_EXT_RE.test(filename);
 }
 
-// Mirrored from src/content-script.js — keep in sync.
+// Mirrored from src/content-script.js -- keep in sync.
 function isAudioInfo(info) {
   if (!info) return false;
   if (typeof info.mediatype === 'string' && info.mediatype.toUpperCase() === 'AUDIO') return true;
@@ -52,7 +52,7 @@ function audioItemsFromPages(pages) {
   return results;
 }
 
-// Mirrored from src/background.js sanitizeFilename — keep in sync.
+// Mirrored from src/background.js sanitizeFilename -- keep in sync.
 const WINDOWS_RESERVED_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
 const FORBIDDEN_CHARS_RE = /[<>:"/\\|?*\x00-\x1f]/g;
 const UTF8_ENCODER = new TextEncoder();
@@ -85,7 +85,7 @@ function sanitizeFilename(filename) {
   return s || 'audio';
 }
 
-// Mirrored from src/content-script.js — keep in sync.
+// Mirrored from src/content-script.js -- keep in sync.
 const ISO_639_3_TO_1 = {
   eng: 'en', deu: 'de', fra: 'fr', spa: 'es', ita: 'it',
   jpn: 'ja', zho: 'zh', cmn: 'zh', yue: 'zh', por: 'pt',
@@ -236,14 +236,14 @@ function humanReadableName(parsed, originalFilename) {
 }
 function humanReadable(raw) { return humanReadableName(parseAudioFilename(raw), raw); }
 
-// Mirrored from src/content-script.js batchFolderName — keep in sync.
+// Mirrored from src/content-script.js batchFolderName -- keep in sync.
 function batchFolderName(hostname, title) {
   const m = hostname.match(/^([a-z]{2,3})\.wiktionary\.org$/);
   const edition = m?.[1] || 'wiktionary';
   return `Wiktionary-${edition}-${title || 'audio'}`;
 }
 
-// Mirrored from src/background.js pathWithFolder — keep in sync.
+// Mirrored from src/background.js pathWithFolder -- keep in sync.
 function pathWithFolder(folder, filename) {
   const file = sanitizeFilename(filename);
   if (!folder) return file;
@@ -338,10 +338,10 @@ assert(sanitizeFilename('LL-Q150_(fra)-Jérémy.wav') === 'LL-Q150_(fra)-Jérém
 assert(sanitizeFilename('En-au-topper.ogg'.replace(/\.[^.]+$/, '')) === 'En-au-topper', 'base name');
 
 // New cross-platform behavior
-assert(sanitizeFilename('') === 'audio', 'empty → audio fallback');
-assert(sanitizeFilename(null) === 'audio', 'null → audio fallback');
-assert(sanitizeFilename(undefined) === 'audio', 'undefined → audio fallback');
-assert(sanitizeFilename(123) === 'audio', 'non-string → audio fallback');
+assert(sanitizeFilename('') === 'audio', 'empty -> audio fallback');
+assert(sanitizeFilename(null) === 'audio', 'null -> audio fallback');
+assert(sanitizeFilename(undefined) === 'audio', 'undefined -> audio fallback');
+assert(sanitizeFilename(123) === 'audio', 'non-string -> audio fallback');
 assert(sanitizeFilename('foo|bar/baz.ogg') === 'foo_bar_baz.ogg', 'Linux/Mac slash + pipe');
 assert(sanitizeFilename('foo\x00bar.ogg') === 'foo_bar.ogg', 'NUL replaced');
 assert(sanitizeFilename('foo\x01\x1fbar.ogg') === 'foo__bar.ogg', 'control chars replaced');
@@ -358,7 +358,7 @@ assert(sanitizeFilename('café.mp3') === 'café.mp3', 'accented preserved');
 // Length: 255 chars of ASCII fits in 255 bytes
 assert(sanitizeFilename('a'.repeat(300)).length === 255, 'ASCII length cap');
 assert(sanitizeFilename('a'.repeat(300) + '.ogg').endsWith('.ogg'), 'extension preserved on truncate');
-// 100 chars of '水' = 300 bytes UTF-8 → must truncate by byte count, not char count
+// 100 chars of '水' = 300 bytes UTF-8 -> must truncate by byte count, not char count
 const longCJK = '水'.repeat(100);
 assert(utf8ByteLength(sanitizeFilename(longCJK)) <= 255, 'CJK truncated by UTF-8 bytes');
 
@@ -372,36 +372,36 @@ assert(p3.lang === 'eng' && p3.speaker === 'Speaker' && p3.word === 'water' && p
 const p4 = parseAudioFilename('En-au-Georgian.ogg?utm_source=en.wiktionary.org&utm_campaign=imageinfo');
 assert(p4.lang === 'en' && p4.dialect === 'au' && p4.word === 'Georgian' && p4.ext === 'ogg', 'strips query string');
 const p5 = parseAudioFilename('https://upload.wikimedia.org/wikipedia/commons/4/4c/En-us-water.ogg');
-assert(p5.lang === 'en' && p5.dialect === 'us' && p5.word === 'water', 'full URL → last path segment');
+assert(p5.lang === 'en' && p5.dialect === 'us' && p5.word === 'water', 'full URL -> last path segment');
 const p6 = parseAudioFilename('weird_name.mp3');
 assert(p6.lang === null && p6.word === 'weird_name' && p6.ext === 'mp3', 'unparseable falls back to stem');
 const p7 = parseAudioFilename('');
 assert(p7.word === 'audio' && p7.ext === '', 'empty input safe default');
 
 section('Friendly filename formatting');
-assert(formatAudio('En-au-Georgian.ogg') === 'english_australian_Georgian.ogg', 'En-au-Georgian → english_australian_Georgian');
-assert(formatAudio('De-Wasser.ogg') === 'german_Wasser.ogg', 'De-Wasser → german_Wasser');
-assert(formatAudio('En-us-water.ogg') === 'english_american_water.ogg', 'En-us-water → english_american_water');
-assert(formatAudio('Fr-eau.ogg') === 'french_eau.ogg', 'Fr-eau → french_eau');
-assert(formatAudio('LL-Q1860_(eng)-Stebbington-water.wav') === 'english_water_Stebbington.wav', 'LL → english_word_speaker');
+assert(formatAudio('En-au-Georgian.ogg') === 'english_australian_Georgian.ogg', 'En-au-Georgian -> english_australian_Georgian');
+assert(formatAudio('De-Wasser.ogg') === 'german_Wasser.ogg', 'De-Wasser -> german_Wasser');
+assert(formatAudio('En-us-water.ogg') === 'english_american_water.ogg', 'En-us-water -> english_american_water');
+assert(formatAudio('Fr-eau.ogg') === 'french_eau.ogg', 'Fr-eau -> french_eau');
+assert(formatAudio('LL-Q1860_(eng)-Stebbington-water.wav') === 'english_water_Stebbington.wav', 'LL -> english_word_speaker');
 assert(formatAudio('En-au-Georgian.ogg?utm_source=foo') === 'english_australian_Georgian.ogg', 'friendly strips utm');
-assert(formatAudio('weird_name.mp3') === 'weird-name.mp3', 'unparseable: underscore in word → hyphen (within-field)');
+assert(formatAudio('weird_name.mp3') === 'weird-name.mp3', 'unparseable: underscore in word -> hyphen (within-field)');
 // Unknown dialect code passes through verbatim (lowercased)
-assert(formatAudio('En-xx-thing.ogg') === 'english_xx_thing.ogg', 'unknown dialect → code');
+assert(formatAudio('En-xx-thing.ogg') === 'english_xx_thing.ogg', 'unknown dialect -> code');
 
 // Real-world variants observed in live sweep
 const p9 = parseAudioFilename('LL-Guilhelma-fr-eau.wav');
 assert(p9.lang === 'fr' && p9.speaker === 'Guilhelma' && p9.word === 'eau', 'LL hyphenated form (no Q-number)');
-assert(formatAudio('LL-Guilhelma-fr-eau.wav') === 'french_eau_Guilhelma.wav', 'LL hyphenated → friendly');
+assert(formatAudio('LL-Guilhelma-fr-eau.wav') === 'french_eau_Guilhelma.wav', 'LL hyphenated -> friendly');
 
 const p10 = parseAudioFilename('LL-Q9186-Justinrleung-水.wav');
 assert(p10.lang === null && p10.speaker === 'Justinrleung' && p10.word === '水', 'LL Q-number hyphenated form');
-assert(formatAudio('LL-Q9186-Justinrleung-水.wav') === '水_Justinrleung.wav', 'LL Q-hyphen → friendly (lang unknown)');
+assert(formatAudio('LL-Q9186-Justinrleung-水.wav') === '水_Justinrleung.wav', 'LL Q-hyphen -> friendly (lang unknown)');
 
 const p11 = parseAudioFilename('Es-am_lat-agua.ogg');
 assert(p11.lang === 'es' && p11.dialect === 'am_lat' && p11.word === 'agua', 'dialect with underscore');
-assert(formatAudio('Es-am_lat-agua.ogg') === 'spanish_latin-american_agua.ogg', 'am_lat → latin-american (hyphen within field)');
-assert(formatAudio('Es-am-lat-agua.ogg') === 'spanish_latin-american_agua.ogg', 'am-lat (hyphen form) → latin-american');
+assert(formatAudio('Es-am_lat-agua.ogg') === 'spanish_latin-american_agua.ogg', 'am_lat -> latin-american (hyphen within field)');
+assert(formatAudio('Es-am-lat-agua.ogg') === 'spanish_latin-american_agua.ogg', 'am-lat (hyphen form) -> latin-american');
 assert(formatAudio('Zh-cmn-shuǐ.ogg') === 'chinese_mandarin_shuǐ.ogg', 'Chinese topolect as dialect');
 
 section('Separator convention: _ between fields, - within a field');
@@ -414,31 +414,31 @@ assert(
   'speaker underscores normalize to hyphens (within speaker field)'
 );
 // Multi-word region from Intl (e.g., New Zealand) stays as a single field with `-`.
-assert(formatAudio('En-nz-kia_ora.ogg') === 'english_new-zealand_kia-ora.ogg', 'nz → new-zealand; word underscore → hyphen');
+assert(formatAudio('En-nz-kia_ora.ogg') === 'english_new-zealand_kia-ora.ogg', 'nz -> new-zealand; word underscore -> hyphen');
 
 section('Human-readable panel display');
-assert(humanReadable('En-au-friendo.ogg') === "English Australian 'friendo' .ogg", 'En-au-friendo → display');
-assert(humanReadable('En-us-water.ogg') === "English American 'water' .ogg", 'En-us-water → display');
-assert(humanReadable('De-Wasser.ogg') === "German 'Wasser' .ogg", 'De-Wasser (no dialect) → display');
-assert(humanReadable('LL-Q1860_(eng)-Stebbington-water.wav') === "English 'water' by Stebbington .wav", 'LL parens form → display with speaker');
-assert(humanReadable('LL-Guilhelma-fr-eau.wav') === "French 'eau' by Guilhelma .wav", 'LL hyphen form → display with speaker');
-assert(humanReadable('Es-am_lat-agua.ogg') === "Spanish Latin American 'agua' .ogg", 'compound dialect → Title Case with space');
-assert(humanReadable('BY-Wasser.ogg') === 'BY-Wasser.ogg', 'unparseable → original filename verbatim');
-assert(humanReadable('weird_name.mp3') === 'weird_name.mp3', 'unparseable with underscore → original verbatim');
+assert(humanReadable('En-au-friendo.ogg') === "English Australian 'friendo' .ogg", 'En-au-friendo -> display');
+assert(humanReadable('En-us-water.ogg') === "English American 'water' .ogg", 'En-us-water -> display');
+assert(humanReadable('De-Wasser.ogg') === "German 'Wasser' .ogg", 'De-Wasser (no dialect) -> display');
+assert(humanReadable('LL-Q1860_(eng)-Stebbington-water.wav') === "English 'water' by Stebbington .wav", 'LL parens form -> display with speaker');
+assert(humanReadable('LL-Guilhelma-fr-eau.wav') === "French 'eau' by Guilhelma .wav", 'LL hyphen form -> display with speaker');
+assert(humanReadable('Es-am_lat-agua.ogg') === "Spanish Latin American 'agua' .ogg", 'compound dialect -> Title Case with space');
+assert(humanReadable('BY-Wasser.ogg') === 'BY-Wasser.ogg', 'unparseable -> original filename verbatim');
+assert(humanReadable('weird_name.mp3') === 'weird_name.mp3', 'unparseable with underscore -> original verbatim');
 assert(
   humanReadable('LL-Q1860_(eng)-Naomi_Persephone_Amethyst-cat.wav') === "English 'cat' by Naomi Persephone Amethyst .wav",
-  'speaker underscores → spaces in display'
+  'speaker underscores -> spaces in display'
 );
-assert(humanReadable('Zh-cmn-shuǐ.ogg') === "Chinese Mandarin 'shuǐ' .ogg", 'Chinese topolect dialect → display');
+assert(humanReadable('Zh-cmn-shuǐ.ogg') === "Chinese Mandarin 'shuǐ' .ogg", 'Chinese topolect dialect -> display');
 
 section('Hyphenated speakers and compound words (parser ambiguity)');
-// Hyphenated speaker, simple word — greedy speaker handles this without context.
+// Hyphenated speaker, simple word -- greedy speaker handles this without context.
 const hs1 = parseAudioFilename('LL-Q150_(fra)-Jérémy-Günther-water.wav');
 assert(
   hs1.lang === 'fra' && hs1.speaker === 'Jérémy-Günther' && hs1.word === 'water',
   'hyphenated speaker, simple word: speaker=Jérémy-Günther, word=water'
 );
-// Same file with explicit knownWord — still parses correctly.
+// Same file with explicit knownWord -- still parses correctly.
 const hs2 = parseAudioFilename('LL-Q150_(fra)-Jérémy-Günther-water.wav', 'water');
 assert(
   hs2.speaker === 'Jérémy-Günther' && hs2.word === 'water',
@@ -451,7 +451,7 @@ assert(
   'multi-hyphen compound name resolves to single speaker'
 );
 
-// Compound WORD without anchor: degrades — last token becomes word.
+// Compound WORD without anchor: degrades -- last token becomes word.
 const cw1 = parseAudioFilename('LL-Q1860_(eng)-Stebbington-well-known.wav');
 assert(
   cw1.speaker === 'Stebbington-well' && cw1.word === 'known',
@@ -484,7 +484,7 @@ assert(
   'LL3 hyphenated speaker with anchor'
 );
 
-// Compound word with greedy default (no anchor) — speaker absorbs hyphen
+// Compound word with greedy default (no anchor) -- speaker absorbs hyphen
 // regions but the lang code anchor still works because lang must be 2-3 chars.
 const llSH2 = parseAudioFilename('LL-Speaker-fr-eau.wav');
 assert(
@@ -497,15 +497,15 @@ assert(parseAudioFilename('En-au-Georgian.ogg', 'Georgian').dialect === 'au', 'n
 assert(parseAudioFilename('De-Wasser.ogg').lang === 'de', 'non-LL parser still works without anchor arg');
 
 section('Findings from real Wiktionary data');
-// Quebec French — region used as language prefix, no separate lang code.
-assert(formatAudio('Qc-café.ogg') === 'quebec-french_café.ogg', 'Qc → quebec-french in filename');
-assert(humanReadable('Qc-café.ogg') === "Quebec French 'café' .ogg", 'Qc → Quebec French in display');
+// Quebec French -- region used as language prefix, no separate lang code.
+assert(formatAudio('Qc-café.ogg') === 'quebec-french_café.ogg', 'Qc -> quebec-french in filename');
+assert(humanReadable('Qc-café.ogg') === "Quebec French 'café' .ogg", 'Qc -> Quebec French in display');
 
-// Jèrriais — variety with its own Wiktionary entry but no ISO 639-1 code.
-assert(formatAudio('Jer-cat.ogg') === 'jèrriais_cat.ogg', 'Jer → jèrriais in filename');
-assert(humanReadable('Jer-cat.ogg') === "Jèrriais 'cat' .ogg", 'Jer → Jèrriais in display');
+// Jèrriais -- variety with its own Wiktionary entry but no ISO 639-1 code.
+assert(formatAudio('Jer-cat.ogg') === 'jèrriais_cat.ogg', 'Jer -> jèrriais in filename');
+assert(humanReadable('Jer-cat.ogg') === "Jèrriais 'cat' .ogg", 'Jer -> Jèrriais in display');
 
-// Long regional dialect tag — only resolves cleanly with knownWord anchor.
+// Long regional dialect tag -- only resolves cleanly with knownWord anchor.
 // Without context, the dialect is capped at 7 chars to avoid greedy over-match
 // in the common "En-us-hello-4" case (where us-hello would otherwise be eaten).
 const inlandRaw = parseAudioFilename('En-inlandnorth-cat.ogg');
@@ -520,14 +520,14 @@ assert(
 );
 assert(
   friendlyAudioFilename(inlandAnchored) === 'english_inland-north_cat.ogg',
-  'anchored: inlandnorth → inland-north in filename'
+  'anchored: inlandnorth -> inland-north in filename'
 );
 assert(
   humanReadableName(inlandAnchored, 'En-inlandnorth-cat.ogg') === "English Inland North 'cat' .ogg",
-  'anchored: inlandnorth → Inland North in display'
+  'anchored: inlandnorth -> Inland North in display'
 );
 
-// Compound dialect (us-inlandnorth) — needs anchor + compound-split.
+// Compound dialect (us-inlandnorth) -- needs anchor + compound-split.
 const compoundDialect = parseAudioFilename('En-us-inlandnorth-cat.ogg', 'cat');
 assert(
   compoundDialect.dialect === 'us-inlandnorth' && compoundDialect.word === 'cat',
@@ -539,10 +539,10 @@ assert(
 );
 assert(
   humanReadableName(compoundDialect, 'En-us-inlandnorth-cat.ogg') === "English American Inland North 'cat' .ogg",
-  'compound dialect → multi-word display'
+  'compound dialect -> multi-word display'
 );
 
-// Variant-indexed file (En-us-hello-4) — anchor accepts pageTitle-<suffix>
+// Variant-indexed file (En-us-hello-4) -- anchor accepts pageTitle-<suffix>
 // so dialect stays at `us` and the suffix rides on the word.
 const variantAnchored = parseAudioFilename('En-us-hello-4.ogg', 'hello');
 assert(
@@ -577,8 +577,8 @@ assert(batchFolderName('example.com', 'foo') === 'Wiktionary-wiktionary-foo', 'n
 assert(batchFolderName('en.wiktionary.org', '') === 'Wiktionary-en-audio', 'empty title falls back to "audio"');
 
 // pathWithFolder composes the final chrome.downloads filename.
-assert(pathWithFolder(null, 'foo.ogg') === 'foo.ogg', 'no folder → just filename');
-assert(pathWithFolder('', 'foo.ogg') === 'foo.ogg', 'empty folder → just filename');
+assert(pathWithFolder(null, 'foo.ogg') === 'foo.ogg', 'no folder -> just filename');
+assert(pathWithFolder('', 'foo.ogg') === 'foo.ogg', 'empty folder -> just filename');
 assert(
   pathWithFolder('Wiktionary-en-water', 'english_american_water.ogg') === 'Wiktionary-en-water/english_american_water.ogg',
   'folder + file joined with /'
@@ -611,7 +611,7 @@ assert(formatAudio('Vi-X.ogg') === 'vietnamese_X.ogg', 'vi (Vietnamese) via Intl
 assert(formatAudio('Eo-X.ogg') === 'esperanto_X.ogg', 'eo (Esperanto) via Intl');
 // Region/dialect that isn't in DIALECT_ADJECTIVES falls back to Intl region.
 const intlRegion = formatAudio('Es-cl-agua.ogg');
-assert(intlRegion === 'spanish_chile_agua.ogg' || intlRegion === 'spanish_cl_agua.ogg', 'cl (Chile) via Intl region — noun form acceptable');
+assert(intlRegion === 'spanish_chile_agua.ogg' || intlRegion === 'spanish_cl_agua.ogg', 'cl (Chile) via Intl region -- noun form acceptable');
 
 section('Title extraction');
 assert(extractTitle('/wiki/water') === 'water', 'simple');

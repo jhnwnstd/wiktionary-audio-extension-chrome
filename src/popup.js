@@ -1,4 +1,4 @@
-// popup.js — Settings for download mode (Original / Convert / Both)
+// popup.js -- Settings for download mode (Original / Convert / Both)
 
 const radios = [...document.querySelectorAll('input[name="mode"]')];
 const wavWarning = document.getElementById('wav-warning');

@@ -1,5 +1,5 @@
 // @ts-check
-// Popup spec — loads the extension via persistent context, opens the popup,
+// Popup spec -- loads the extension via persistent context, opens the popup,
 // asserts radios are present, and confirms mode selection persists across reload.
 
 const { test, expect, chromium } = require('@playwright/test');
@@ -48,7 +48,7 @@ test.describe('popup', () => {
 
     await page.getByTestId('wad-mode-convert').check();
 
-    // Wait for status confirmation — proves chrome.storage.sync.set completed.
+    // Wait for status confirmation -- proves chrome.storage.sync.set completed.
     await expect(page.locator('#status')).toContainText(/Saved/);
 
     await page.reload();
@@ -72,7 +72,7 @@ test.describe('popup', () => {
     const page = await context.newPage();
     await page.goto(`chrome-extension://${extensionId}/popup.html`);
 
-    // Click on the text span (not the radio dot) — this verifies the whole
+    // Click on the text span (not the radio dot) -- this verifies the whole
     // <label class="radio-container"> is the click target, which is the fix
     // for the "had to click twice" UX bug.
     await page.getByTestId('wad-mode-convert').locator('..').locator('span.radio-label').click();

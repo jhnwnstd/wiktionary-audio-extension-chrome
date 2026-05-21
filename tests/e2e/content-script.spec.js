@@ -1,5 +1,5 @@
 // @ts-check
-// Content script spec — navigates to a Wiktionary URL (intercepted with a local
+// Content script spec -- navigates to a Wiktionary URL (intercepted with a local
 // HTML fixture) and asserts the panel renders given mocked MediaWiki API responses.
 // The content script uses a single Action API call (generator=images + prop=imageinfo)
 // with formatversion=2, so pages come back as an array.
@@ -17,7 +17,7 @@ const waterFixture = fs.readFileSync(
 const WATER_URL = 'https://en.wiktionary.org/wiki/water';
 
 /**
- * Build a canned Action API response (formatversion=2 — pages is an array).
+ * Build a canned Action API response (formatversion=2 -- pages is an array).
  * @param {Array<{title: string, url: string, mime?: string, mediatype?: string}>} entries
  */
 function actionApiResponse(entries) {
@@ -87,13 +87,13 @@ test.describe('content script audio discovery', () => {
     await expect(page.getByTestId('wad-panel')).toBeVisible();
     await expect(page.getByTestId('wad-audio-item')).toHaveCount(2);
     await expect(page.getByTestId('wad-download-all')).toBeVisible();
-    // Parser → human-readable display end-to-end.
+    // Parser -> human-readable display end-to-end.
     await expect(page.getByTestId('wad-audio-filename').first()).toHaveText("English American 'water' .ogg");
     await expect(page.getByTestId('wad-audio-filename').nth(1)).toHaveText("English British 'water' .ogg");
   });
 
   test('filters out non-audio files using mediatype', async () => {
-    // Mix audio + image pages — only the audio one should survive the filter.
+    // Mix audio + image pages -- only the audio one should survive the filter.
     await context.route('**/w/api.php**', (route) =>
       route.fulfill({
         status: 200,
@@ -122,7 +122,7 @@ test.describe('content script audio discovery', () => {
 
     await expect(page.getByTestId('wad-panel')).toBeVisible();
     await expect(page.getByTestId('wad-audio-item')).toHaveCount(1);
-    // Single item → no "Download All" button is rendered.
+    // Single item -> no "Download All" button is rendered.
     await expect(page.getByTestId('wad-download-all')).toHaveCount(0);
   });
 

@@ -2,7 +2,7 @@
 // Live Wiktionary smoke + profiling. Tagged @live so it is excluded from the
 // default deterministic suite. Run with: npm run test:live
 //
-// Hits real Wikimedia endpoints — keep it sequential and gentle. Network or
+// Hits real Wikimedia endpoints -- keep it sequential and gentle. Network or
 // content drift will surface as a failure; deterministic specs cover schema.
 
 const { test, expect, chromium } = require('@playwright/test');
@@ -83,7 +83,7 @@ test.describe('discovery sweep', { tag: '@live' }, () => {
 
       discoveryMetrics.push({ url, panelMs, firstItemMs, itemCount, sampleNames, err });
 
-      // Live discovery is informational, not assertive — Wiktionary entries
+      // Live discovery is informational, not assertive -- Wiktionary entries
       // vary by edition. The afterAll summary lists which URLs found audio;
       // a catastrophic regression would surface as 0/N across all URLs.
     });
@@ -163,9 +163,9 @@ test.describe('download paths', { tag: '@live' }, () => {
     const start = Date.now();
     await btn.click();
     // Content script flips the button text to "Downloaded" (or localized
-    // equivalent) on success — see src/content-script.js downloadFile.
+    // equivalent) on success -- see src/content-script.js downloadFile.
     await expect(btn).toContainText(/Downloaded/, { timeout: 30_000 });
-    downloadMetrics.push({ label: 'Original click→ack', ms: Date.now() - start });
+    downloadMetrics.push({ label: 'Original click->ack', ms: Date.now() - start });
   });
 
   test('Convert mode produces WAV (full FFmpeg cold path)', async () => {
@@ -201,7 +201,7 @@ test.describe('download paths', { tag: '@live' }, () => {
     await expect(btn).toContainText(/Downloaded/, { timeout: 120_000 });
     const ackMs = Date.now() - start;
 
-    downloadMetrics.push({ label: 'Convert: click→preparing', ms: preparingMs });
-    downloadMetrics.push({ label: 'Convert: click→ack (cold full path)', ms: ackMs });
+    downloadMetrics.push({ label: 'Convert: click->preparing', ms: preparingMs });
+    downloadMetrics.push({ label: 'Convert: click->ack (cold full path)', ms: ackMs });
   });
 });
