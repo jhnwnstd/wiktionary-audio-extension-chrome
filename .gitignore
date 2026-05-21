@@ -7,10 +7,11 @@ build/
 
 # Dev tooling
 node_modules/
-package.json
-package-lock.json
-eslint.config.mjs
-test/
+
+# Playwright artifacts
+/test-results/
+/playwright-report/
+/playwright/.cache/
 
 # Env & secrets
 .env

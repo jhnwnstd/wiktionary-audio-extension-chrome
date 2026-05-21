@@ -284,21 +284,21 @@ function createUI(items) {
   const panel = document.createElement('div');
   panel.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483647;font:13px system-ui';
   panel.innerHTML = `
-    <div id="audio-panel" style="background:#fff;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25);min-width:260px;max-width:360px">
+    <div id="audio-panel" data-testid="wad-panel" style="background:#fff;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25);min-width:260px;max-width:360px">
       <div style="padding:10px 12px;border-bottom:1px solid #eee;font-weight:600;display:flex;justify-content:space-between;align-items:center">
         <span>${t.audioFiles}</span>
-        <button id="minimize-btn" style="border:0;background:none;color:#666;cursor:pointer;font-size:16px;padding:4px;border-radius:4px" title="Minimize panel">\u2212</button>
+        <button id="minimize-btn" data-testid="wad-minimize" style="border:0;background:none;color:#666;cursor:pointer;font-size:16px;padding:4px;border-radius:4px" title="Minimize panel">\u2212</button>
       </div>
       <div class="audio-panel-body" style="max-height:260px;overflow:auto">
         ${items.map((item, i) => `
-          <div style="display:flex;gap:6px;align-items:center;padding:8px 12px;border-bottom:1px solid #f6f6f6">
-            <div style="flex:1;word-break:break-all">${item.filename}</div>
-            <button data-i="${i}" style="border:0;border-radius:8px;padding:6px 12px;background:#1a73e8;color:#fff;cursor:pointer">${t.downloadButton}</button>
+          <div data-testid="wad-audio-item" style="display:flex;gap:6px;align-items:center;padding:8px 12px;border-bottom:1px solid #f6f6f6">
+            <div style="flex:1;word-break:break-all" data-testid="wad-audio-filename">${item.filename}</div>
+            <button data-testid="wad-download" data-i="${i}" style="border:0;border-radius:8px;padding:6px 12px;background:#1a73e8;color:#fff;cursor:pointer">${t.downloadButton}</button>
           </div>`).join('')}
       </div>
       ${items.length > 1 ? `
       <div class="audio-panel-footer" style="display:flex;gap:8px;padding:10px 12px">
-        <button id="dl-all" style="border:0;border-radius:8px;padding:8px 12px;background:#1a73e8;color:#fff;cursor:pointer">${t.downloadAllButton}</button>
+        <button id="dl-all" data-testid="wad-download-all" style="border:0;border-radius:8px;padding:8px 12px;background:#1a73e8;color:#fff;cursor:pointer">${t.downloadAllButton}</button>
       </div>` : ''}
     </div>`;
 

@@ -1,0 +1,30 @@
+{
+  "name": "wiktionary-audio-extension-chrome",
+  "version": "1.1.0",
+  "description": "Chrome extension (Manifest V3) that finds pronunciation audio on any Wiktionary page and lets you download the original file or convert it to WAV locally via FFmpeg.wasm. No servers, no remote code.",
+  "main": "background.js",
+  "scripts": {
+    "lint": "eslint src/**/*.js tests/**/*.js playwright.config.js",
+    "test": "node tests/unit/test.js",
+    "test:e2e": "playwright test",
+    "check": "npm run lint && npm run test",
+    "test:all": "npm run check && npm run test:e2e"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jhnwnstd/wiktionary-audio-extension-chrome.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "GPL-3.0-only",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/jhnwnstd/wiktionary-audio-extension-chrome/issues"
+  },
+  "homepage": "https://github.com/jhnwnstd/wiktionary-audio-extension-chrome#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "eslint": "^10.1.0",
+    "globals": "^17.4.0"
+  }
+}
