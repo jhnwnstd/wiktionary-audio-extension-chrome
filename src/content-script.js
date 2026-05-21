@@ -392,9 +392,6 @@ function friendlyAudioFilename(parsed) {
   return parsed.ext ? `${stem}.${parsed.ext}` : stem;
 }
 
-function formatAudio(rawFilename) {
-  return friendlyAudioFilename(parseAudioFilename(rawFilename));
-}
 
 // Human-readable display string for the on-page panel. Same parsed fields as
 // the download name, but rendered for humans: title-cased language and
