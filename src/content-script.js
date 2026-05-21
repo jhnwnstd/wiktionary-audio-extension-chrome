@@ -161,15 +161,19 @@ const ISO_639_3_TO_1 = {
 // the region API, but filenames read more naturally with adjectives. This
 // table is intentionally short — anything not listed falls through to the
 // region API, then to the raw code.
+//
+// Separator convention: `-` joins words within a single field value; `_`
+// joins different fields (handled in friendlyAudioFilename). So
+// `latin-american` (one field) but `spanish_latin-american_agua` (three).
 const DIALECT_ADJECTIVES = {
   us: 'american', uk: 'british', gb: 'british',
   au: 'australian', ca: 'canadian', ie: 'irish',
-  nz: 'new_zealand', za: 'south_african', in: 'indian',
+  nz: 'new-zealand', za: 'south-african', in: 'indian',
   mx: 'mexican', ar: 'argentinian', br: 'brazilian',
   at: 'austrian', ch: 'swiss', be: 'belgian',
-  'am-lat': 'latin_american', 'am_lat': 'latin_american',
+  'am-lat': 'latin-american', 'am_lat': 'latin-american',
   cmn: 'mandarin', yue: 'cantonese', wuu: 'shanghainese',
-  nan: 'min_nan', hak: 'hakka',
+  nan: 'min-nan', hak: 'hakka',
 };
 
 const LANG_DISPLAY = (() => {
@@ -181,10 +185,19 @@ const REGION_DISPLAY = (() => {
   catch { return null; }
 })();
 
+// Within a single field, multi-word values use `-`. "United States" → "united-states".
 function slugifyName(s) {
   return String(s).toLowerCase()
-    .replace(/[^a-z0-9_]+/g, '_')
-    .replace(/^_+|_+$/g, '');
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+// Normalize a field value pulled directly from the source filename (word or
+// speaker). Source underscores and whitespace become `-` so they don't collide
+// with the `_` we use to join different fields.
+function normalizeFieldValue(v) {
+  if (v === null || v === undefined) return v;
+  return String(v).replace(/[_\s]+/g, '-');
 }
 
 function describeLanguage(code) {
@@ -199,7 +212,7 @@ function describeLanguage(code) {
       if (display && display.toLowerCase() !== key) return slugifyName(display);
     } catch { /* fall through */ }
   }
-  return key.replace(/-/g, '_');
+  return normalizeFieldValue(key);
 }
 
 function describeDialect(code) {
@@ -214,7 +227,7 @@ function describeDialect(code) {
       if (display && display.toLowerCase() !== key) return slugifyName(display);
     } catch { /* fall through */ }
   }
-  return key.replace(/-/g, '_');
+  return normalizeFieldValue(key);
 }
 
 function parseAudioFilename(raw) {
@@ -280,10 +293,11 @@ function friendlyAudioFilename(parsed) {
   if (lang) parts.push(lang);
   const dialect = describeDialect(parsed.dialect);
   if (dialect) parts.push(dialect);
-  parts.push(parsed.word);
+  parts.push(normalizeFieldValue(parsed.word));
   // Speaker disambiguator (LinguaLibre) so multiple speakers don't collide.
-  if (parsed.speaker) parts.push(parsed.speaker);
-  const stem = parts.join('_').replace(/\s+/g, '_');
+  if (parsed.speaker) parts.push(normalizeFieldValue(parsed.speaker));
+  // `_` joins different fields; within-field separators are already `-`.
+  const stem = parts.join('_');
   return parsed.ext ? `${stem}.${parsed.ext}` : stem;
 }
 

@@ -83,12 +83,12 @@ const ISO_639_3_TO_1 = {
 const DIALECT_ADJECTIVES = {
   us: 'american', uk: 'british', gb: 'british',
   au: 'australian', ca: 'canadian', ie: 'irish',
-  nz: 'new_zealand', za: 'south_african', in: 'indian',
+  nz: 'new-zealand', za: 'south-african', in: 'indian',
   mx: 'mexican', ar: 'argentinian', br: 'brazilian',
   at: 'austrian', ch: 'swiss', be: 'belgian',
-  'am-lat': 'latin_american', 'am_lat': 'latin_american',
+  'am-lat': 'latin-american', 'am_lat': 'latin-american',
   cmn: 'mandarin', yue: 'cantonese', wuu: 'shanghainese',
-  nan: 'min_nan', hak: 'hakka',
+  nan: 'min-nan', hak: 'hakka',
 };
 const LANG_DISPLAY = (() => {
   try { return new Intl.DisplayNames(['en'], { type: 'language', fallback: 'code' }); }
@@ -99,7 +99,11 @@ const REGION_DISPLAY = (() => {
   catch { return null; }
 })();
 function slugifyName(s) {
-  return String(s).toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
+  return String(s).toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+}
+function normalizeFieldValue(v) {
+  if (v === null || v === undefined) return v;
+  return String(v).replace(/[_\s]+/g, '-');
 }
 function describeLanguage(code) {
   if (!code) return null;
@@ -111,7 +115,7 @@ function describeLanguage(code) {
       if (d && d.toLowerCase() !== key) return slugifyName(d);
     } catch { /* fall through */ }
   }
-  return key.replace(/-/g, '_');
+  return normalizeFieldValue(key);
 }
 function describeDialect(code) {
   if (!code) return null;
@@ -123,7 +127,7 @@ function describeDialect(code) {
       if (d && d.toLowerCase() !== key) return slugifyName(d);
     } catch { /* fall through */ }
   }
-  return key.replace(/-/g, '_');
+  return normalizeFieldValue(key);
 }
 function parseAudioFilename(raw) {
   if (!raw) return { lang: null, dialect: null, speaker: null, word: 'audio', ext: '' };
@@ -150,9 +154,9 @@ function friendlyAudioFilename(parsed) {
   if (lang) parts.push(lang);
   const dialect = describeDialect(parsed.dialect);
   if (dialect) parts.push(dialect);
-  parts.push(parsed.word);
-  if (parsed.speaker) parts.push(parsed.speaker);
-  const stem = parts.join('_').replace(/\s+/g, '_');
+  parts.push(normalizeFieldValue(parsed.word));
+  if (parsed.speaker) parts.push(normalizeFieldValue(parsed.speaker));
+  const stem = parts.join('_');
   return parsed.ext ? `${stem}.${parsed.ext}` : stem;
 }
 function formatAudio(raw) { return friendlyAudioFilename(parseAudioFilename(raw)); }
@@ -284,7 +288,7 @@ assert(formatAudio('En-us-water.ogg') === 'english_american_water.ogg', 'En-us-w
 assert(formatAudio('Fr-eau.ogg') === 'french_eau.ogg', 'Fr-eau → french_eau');
 assert(formatAudio('LL-Q1860_(eng)-Stebbington-water.wav') === 'english_water_Stebbington.wav', 'LL → english_word_speaker');
 assert(formatAudio('En-au-Georgian.ogg?utm_source=foo') === 'english_australian_Georgian.ogg', 'friendly strips utm');
-assert(formatAudio('weird_name.mp3') === 'weird_name.mp3', 'unparseable pass-through');
+assert(formatAudio('weird_name.mp3') === 'weird-name.mp3', 'unparseable: underscore in word → hyphen (within-field)');
 // Unknown dialect code passes through verbatim (lowercased)
 assert(formatAudio('En-xx-thing.ogg') === 'english_xx_thing.ogg', 'unknown dialect → code');
 
@@ -299,9 +303,21 @@ assert(formatAudio('LL-Q9186-Justinrleung-水.wav') === '水_Justinrleung.wav', 
 
 const p11 = parseAudioFilename('Es-am_lat-agua.ogg');
 assert(p11.lang === 'es' && p11.dialect === 'am_lat' && p11.word === 'agua', 'dialect with underscore');
-assert(formatAudio('Es-am_lat-agua.ogg') === 'spanish_latin_american_agua.ogg', 'am_lat → latin_american');
-assert(formatAudio('Es-am-lat-agua.ogg') === 'spanish_latin_american_agua.ogg', 'am-lat (hyphen form) → latin_american');
+assert(formatAudio('Es-am_lat-agua.ogg') === 'spanish_latin-american_agua.ogg', 'am_lat → latin-american (hyphen within field)');
+assert(formatAudio('Es-am-lat-agua.ogg') === 'spanish_latin-american_agua.ogg', 'am-lat (hyphen form) → latin-american');
 assert(formatAudio('Zh-cmn-shuǐ.ogg') === 'chinese_mandarin_shuǐ.ogg', 'Chinese topolect as dialect');
+
+section('Separator convention: _ between fields, - within a field');
+// LinguaLibre speakers often have underscores in source (Naomi_Persephone_Amethyst);
+// those are inside one field (speaker) so they normalize to hyphens.
+const llNaomi = parseAudioFilename('LL-Q1860_(eng)-Naomi_Persephone_Amethyst-cat.wav');
+assert(llNaomi.speaker === 'Naomi_Persephone_Amethyst', 'parser keeps source speaker verbatim');
+assert(
+  formatAudio('LL-Q1860_(eng)-Naomi_Persephone_Amethyst-cat.wav') === 'english_cat_Naomi-Persephone-Amethyst.wav',
+  'speaker underscores normalize to hyphens (within speaker field)'
+);
+// Multi-word region from Intl (e.g., New Zealand) stays as a single field with `-`.
+assert(formatAudio('En-nz-kia_ora.ogg') === 'english_new-zealand_kia-ora.ogg', 'nz → new-zealand; word underscore → hyphen');
 
 section('Dynamic language coverage via Intl.DisplayNames');
 // These languages are NOT in any hardcoded table. They flow through
