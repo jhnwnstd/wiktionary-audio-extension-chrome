@@ -160,9 +160,9 @@ test.describe('download paths', { tag: '@live' }, () => {
 
     const start = Date.now();
     await btn.click();
-    // Content script flips the button text to "✓ Downloaded" (or localized
+    // Content script flips the button text to "Downloaded" (or localized
     // equivalent) on success — see src/content-script.js downloadFile.
-    await expect(btn).toContainText(/Downloaded|✓/, { timeout: 30_000 });
+    await expect(btn).toContainText(/Downloaded/, { timeout: 30_000 });
     downloadMetrics.push({ label: 'Original click→ack', ms: Date.now() - start });
   });
 
@@ -173,7 +173,7 @@ test.describe('download paths', { tag: '@live' }, () => {
     const popup = await context.newPage();
     await popup.goto(`chrome-extension://${extensionId}/popup.html`);
     await popup.getByTestId('wad-mode-convert').check();
-    await expect(popup.locator('#status')).toContainText('Settings saved');
+    await expect(popup.locator('#status')).toContainText(/Saved/);
     await popup.close();
 
     const page = await context.newPage();
@@ -192,11 +192,11 @@ test.describe('download paths', { tag: '@live' }, () => {
     // preparingConverter feedback entirely). If storage.sync.set didn't stick,
     // this assertion fails fast instead of letting an Original-path download
     // masquerade as a successful conversion.
-    await expect(btn).toContainText(/Preparing converter|⏳/, { timeout: 5_000 });
+    await expect(btn).toContainText(/Converting/, { timeout: 5_000 });
     const preparingMs = Date.now() - start;
 
     // Cold FFmpeg load + transcode can take up to ~60s on first run.
-    await expect(btn).toContainText(/Downloaded|✓/, { timeout: 120_000 });
+    await expect(btn).toContainText(/Downloaded/, { timeout: 120_000 });
     const ackMs = Date.now() - start;
 
     downloadMetrics.push({ label: 'Convert: click→preparing', ms: preparingMs });

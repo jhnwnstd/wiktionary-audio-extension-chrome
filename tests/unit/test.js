@@ -23,11 +23,24 @@ function isAudioFile(filename, mimeType) {
   return typeof filename === 'string' && AUDIO_EXT_RE.test(filename);
 }
 
-function parseAudioPages(pages) {
+// Mirrored from src/content-script.js — keep in sync.
+function isAudioInfo(info) {
+  if (!info) return false;
+  if (typeof info.mediatype === 'string' && info.mediatype.toUpperCase() === 'AUDIO') return true;
+  if (typeof info.mime === 'string') {
+    if (info.mime.startsWith('audio/')) return true;
+    if (AUDIO_MIMES.has(info.mime.toLowerCase())) return true;
+  }
+  if (typeof info.url === 'string' && AUDIO_EXT_RE.test(info.url)) return true;
+  return false;
+}
+
+function audioItemsFromPages(pages) {
+  if (!Array.isArray(pages)) return [];
   const results = [];
-  for (const page of Object.values(pages || {})) {
+  for (const page of pages) {
     const info = page?.imageinfo?.[0];
-    if (info?.url && isAudioFile(info.url, info.mime)) {
+    if (info?.url && isAudioInfo(info)) {
       results.push({
         title: page.title,
         url: info.url,
@@ -233,22 +246,36 @@ assert(!isAudioFile(undefined), 'reject undefined');
 assert(!isAudioFile('', ''), 'reject empty');
 assert(!isAudioFile(123), 'reject non-string');
 
-section('Parse API responses');
-const oggPages = {
-  "-1": { title: "File:En-au-topper.ogg", imageinfo: [{ url: "https://upload.wikimedia.org/wikipedia/commons/4/4c/En-au-topper.ogg", mime: "application/ogg" }] },
-  "-2": { title: "File:Nl-topper.ogg", imageinfo: [{ url: "https://upload.wikimedia.org/wikipedia/commons/8/85/Nl-topper.ogg", mime: "application/ogg" }] }
-};
-assert(parseAudioPages(oggPages).length === 2, '2 OGG files with application/ogg');
-assert(parseAudioPages(null).length === 0, 'null pages');
-assert(parseAudioPages({}).length === 0, 'empty pages');
-assert(parseAudioPages({ "-1": { title: "File:t.ogg" } }).length === 0, 'no imageinfo');
-assert(parseAudioPages({ "-1": { title: "File:t.jpg", imageinfo: [{ url: "https://x/t.jpg", mime: "image/jpeg" }] } }).length === 0, 'image page');
+section('Parse Action API responses (formatversion=2 array form)');
+const oggPages = [
+  { title: 'File:En-au-topper.ogg', imageinfo: [{ url: 'https://upload.wikimedia.org/wikipedia/commons/4/4c/En-au-topper.ogg', mime: 'application/ogg', mediatype: 'AUDIO' }] },
+  { title: 'File:Nl-topper.ogg', imageinfo: [{ url: 'https://upload.wikimedia.org/wikipedia/commons/8/85/Nl-topper.ogg', mime: 'application/ogg', mediatype: 'AUDIO' }] },
+];
+assert(audioItemsFromPages(oggPages).length === 2, '2 OGG files with mediatype=AUDIO');
+assert(audioItemsFromPages(null).length === 0, 'null pages');
+assert(audioItemsFromPages([]).length === 0, 'empty pages array');
+assert(audioItemsFromPages({ '-1': { title: 'File:t.ogg' } }).length === 0, 'rejects v1 object form');
+assert(audioItemsFromPages([{ title: 'File:t.ogg' }]).length === 0, 'no imageinfo');
+assert(
+  audioItemsFromPages([{ title: 'File:t.jpg', imageinfo: [{ url: 'https://x/t.jpg', mime: 'image/jpeg', mediatype: 'BITMAP' }] }]).length === 0,
+  'image page filtered by mediatype'
+);
 
-const waterPages = {
-  "-1": { title: "File:water.ogg", imageinfo: [{ url: "https://upload.wikimedia.org/a/b/En-us-water.ogg", mime: "application/ogg" }] },
-  "-2": { title: "File:water.wav", imageinfo: [{ url: "https://upload.wikimedia.org/a/b/LL-Q1860_%28eng%29-water.wav", mime: "audio/wav" }] }
-};
-const wr = parseAudioPages(waterPages);
+// mediatype is the primary filter; fall back to mime and then extension.
+assert(
+  audioItemsFromPages([{ title: 'File:x.opus', imageinfo: [{ url: 'https://x/y.opus', mediatype: 'AUDIO' }] }]).length === 1,
+  'mediatype-only (no mime) still passes'
+);
+assert(
+  audioItemsFromPages([{ title: 'File:x.mp3', imageinfo: [{ url: 'https://x/y.mp3', mime: 'audio/mpeg' }] }]).length === 1,
+  'mime-only audio/* passes when mediatype absent'
+);
+
+const waterPages = [
+  { title: 'File:water.ogg', imageinfo: [{ url: 'https://upload.wikimedia.org/a/b/En-us-water.ogg', mime: 'application/ogg', mediatype: 'AUDIO' }] },
+  { title: 'File:water.wav', imageinfo: [{ url: 'https://upload.wikimedia.org/a/b/LL-Q1860_%28eng%29-water.wav', mime: 'audio/wav', mediatype: 'AUDIO' }] },
+];
+const wr = audioItemsFromPages(waterPages);
 assert(wr.length === 2, 'mixed formats');
 assert(wr[1].filename === 'LL-Q1860_(eng)-water.wav', 'URL decoded filename');
 

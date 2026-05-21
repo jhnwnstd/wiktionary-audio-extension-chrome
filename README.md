@@ -2,7 +2,7 @@
 
 Chrome extension that finds pronunciation audio on Wiktionary pages.
 
-Download the original audio file, or convert it to WAV locally with vendored FFmpeg.wasm. No conversion server is used.
+Download the original audio file or convert it to WAV locally with vendored FFmpeg.wasm.
 
 ## Features
 

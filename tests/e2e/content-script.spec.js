@@ -1,6 +1,8 @@
 // @ts-check
 // Content script spec — navigates to a Wiktionary URL (intercepted with a local
 // HTML fixture) and asserts the panel renders given mocked MediaWiki API responses.
+// The content script uses a single Action API call (generator=images + prop=imageinfo)
+// with formatversion=2, so pages come back as an array.
 
 const { test, expect, chromium } = require('@playwright/test');
 const fs = require('node:fs');
@@ -15,18 +17,24 @@ const waterFixture = fs.readFileSync(
 const WATER_URL = 'https://en.wiktionary.org/wiki/water';
 
 /**
- * Build a canned imageinfo response for the Action API.
- * @param {Array<{title: string, url: string, mime?: string}>} entries
+ * Build a canned Action API response (formatversion=2 — pages is an array).
+ * @param {Array<{title: string, url: string, mime?: string, mediatype?: string}>} entries
  */
 function actionApiResponse(entries) {
-  const pages = {};
-  entries.forEach((entry, i) => {
-    pages[String(i + 1)] = {
-      title: entry.title,
-      imageinfo: [{ url: entry.url, mime: entry.mime || 'application/ogg' }],
-    };
-  });
-  return { query: { pages } };
+  return {
+    query: {
+      pages: entries.map((entry, i) => ({
+        pageid: i + 1,
+        title: entry.title,
+        imageinfo: [{
+          url: entry.url,
+          mime: entry.mime || 'application/ogg',
+          mediatype: entry.mediatype || 'AUDIO',
+          size: 12345,
+        }],
+      })),
+    },
+  };
 }
 
 test.describe('content script audio discovery', () => {
@@ -53,20 +61,7 @@ test.describe('content script audio discovery', () => {
     await context.close();
   });
 
-  test('renders panel from REST + Action API resolution', async () => {
-    await context.route('**/api/rest_v1/page/media-list/**', (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          items: [
-            { title: 'File:En-us-water.ogg', audio_type: 'generic' },
-            { title: 'File:En-uk-water.ogg', audio_type: 'pronunciation' },
-          ],
-        }),
-      })
-    );
-
+  test('discovers audio via Action API generator=images', async () => {
     await context.route('**/w/api.php**', (route) =>
       route.fulfill({
         status: 200,
@@ -92,23 +87,46 @@ test.describe('content script audio discovery', () => {
     await expect(page.getByTestId('wad-panel')).toBeVisible();
     await expect(page.getByTestId('wad-audio-item')).toHaveCount(2);
     await expect(page.getByTestId('wad-download-all')).toBeVisible();
-    // Parser → human-readable display flowing through end-to-end.
-    // Source File:En-us-water.ogg becomes:
-    //   download name: english_american_water.ogg (used by chrome.downloads)
-    //   panel display: English American 'water' .ogg
+    // Parser → human-readable display end-to-end.
     await expect(page.getByTestId('wad-audio-filename').first()).toHaveText("English American 'water' .ogg");
     await expect(page.getByTestId('wad-audio-filename').nth(1)).toHaveText("English British 'water' .ogg");
   });
 
-  test('falls back to Action API generator=images when REST returns nothing', async () => {
-    await context.route('**/api/rest_v1/page/media-list/**', (route) =>
+  test('filters out non-audio files using mediatype', async () => {
+    // Mix audio + image pages — only the audio one should survive the filter.
+    await context.route('**/w/api.php**', (route) =>
       route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ items: [] }),
+        body: JSON.stringify({
+          query: {
+            pages: [
+              {
+                pageid: 1,
+                title: 'File:Water_drop.jpg',
+                imageinfo: [{ url: 'https://upload.wikimedia.org/x/Water_drop.jpg', mime: 'image/jpeg', mediatype: 'BITMAP' }],
+              },
+              {
+                pageid: 2,
+                title: 'File:En-us-water.ogg',
+                imageinfo: [{ url: 'https://upload.wikimedia.org/x/En-us-water.ogg', mime: 'application/ogg', mediatype: 'AUDIO' }],
+              },
+            ],
+          },
+        }),
       })
     );
 
+    const page = await context.newPage();
+    await page.goto(WATER_URL);
+
+    await expect(page.getByTestId('wad-panel')).toBeVisible();
+    await expect(page.getByTestId('wad-audio-item')).toHaveCount(1);
+    // Single item → no "Download All" button is rendered.
+    await expect(page.getByTestId('wad-download-all')).toHaveCount(0);
+  });
+
+  test('renders preview button per item', async () => {
     await context.route('**/w/api.php**', (route) =>
       route.fulfill({
         status: 200,
@@ -128,25 +146,15 @@ test.describe('content script audio discovery', () => {
     await page.goto(WATER_URL);
 
     await expect(page.getByTestId('wad-panel')).toBeVisible();
-    await expect(page.getByTestId('wad-audio-item')).toHaveCount(1);
-    // Single item → no "Download All" button is rendered.
-    await expect(page.getByTestId('wad-download-all')).toHaveCount(0);
+    await expect(page.getByTestId('wad-preview')).toHaveCount(1);
   });
 
   test('renders nothing when no audio is discovered', async () => {
-    await context.route('**/api/rest_v1/page/media-list/**', (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ items: [] }),
-      })
-    );
-
     await context.route('**/w/api.php**', (route) =>
       route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ query: { pages: {} } }),
+        body: JSON.stringify({ query: { pages: [] } }),
       })
     );
 
