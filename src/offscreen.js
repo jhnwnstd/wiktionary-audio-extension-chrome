@@ -56,24 +56,48 @@ async function cleanupFiles(...names) {
   }
 }
 
-// The vendored FFmpeg.wasm build is a stripped single-thread MV3 build.
-// Do not pass -threads or -af filters here. They are rejected by this build,
-// and a failed exec corrupts the worker so subsequent execs fail too.
+// Conversion profile pinned to the vendored FFmpeg.wasm core's capabilities.
+// We deliberately do NOT runtime-probe or fall back between commands inside
+// the worker — a failed `ffmpeg.exec` can poison the worker state and break
+// subsequent execs. Instead this constant is the single source of truth; the
+// live convert test verifies it works against the vendored core.
 //
-// Keep conversion explicit and conservative. Output is 16-bit PCM WAV, mono,
-// 48 kHz. No normalization, no gain change, no denoise, no silence trim.
-// Lossy source audio cannot be restored to higher fidelity; this command
-// only standardizes the container and rate for analysis tools.
-async function runTranscode(inName, outName) {
-  const args = [
-    '-i', inName,
-    '-vn',
-    '-c:a', 'pcm_s16le',
-    '-ar', '48000',
-    '-ac', '1',
+// Profiles, from best to safest:
+//   'soxr'     -af aresample=resampler=soxr:precision=28:dither_method=triangular
+//              (needs libsoxr in the build; not in upstream @ffmpeg/core)
+//   'aresample' -af aresample=dither_method=triangular
+//              (needs libavfilter + aresample in the build; default upstream)
+//   'safe'      no -af filter, bare PCM conversion
+//
+// Output is always 16-bit PCM WAV, mono, 48 kHz. No normalization, gain,
+// denoise, or silence trim. Lossy source audio can't be restored to higher
+// fidelity; this command standardizes container + rate for analysis tools.
+const FFMPEG_CORE_PROFILE = 'aresample';
+
+const ARGS_BY_PROFILE = {
+  safe: (inName, outName) => [
+    '-i', inName, '-vn',
+    '-c:a', 'pcm_s16le', '-ar', '48000', '-ac', '1',
     '-y', outName,
-  ];
-  log('[Offscreen] ffmpeg', args.join(' '));
+  ],
+  aresample: (inName, outName) => [
+    '-i', inName, '-vn',
+    '-af', 'aresample=dither_method=triangular',
+    '-c:a', 'pcm_s16le', '-ar', '48000', '-ac', '1',
+    '-y', outName,
+  ],
+  soxr: (inName, outName) => [
+    '-i', inName, '-vn',
+    '-af', 'aresample=resampler=soxr:precision=28:dither_method=triangular',
+    '-c:a', 'pcm_s16le', '-ar', '48000', '-ac', '1',
+    '-y', outName,
+  ],
+};
+
+async function runTranscode(inName, outName) {
+  const buildArgs = ARGS_BY_PROFILE[FFMPEG_CORE_PROFILE] || ARGS_BY_PROFILE.safe;
+  const args = buildArgs(inName, outName);
+  log('[Offscreen] ffmpeg', args.join(' '), '(profile=' + FFMPEG_CORE_PROFILE + ')');
   await ffmpeg.exec(args);
 }
 
