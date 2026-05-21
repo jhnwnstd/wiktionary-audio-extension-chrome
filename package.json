@@ -6,7 +6,8 @@
   "scripts": {
     "lint": "eslint src/**/*.js tests/**/*.js playwright.config.js",
     "test": "node tests/unit/test.js",
-    "test:e2e": "playwright test",
+    "test:e2e": "playwright test --grep-invert @live",
+    "test:live": "playwright test --grep @live",
     "check": "npm run lint && npm run test",
     "test:all": "npm run check && npm run test:e2e"
   },
