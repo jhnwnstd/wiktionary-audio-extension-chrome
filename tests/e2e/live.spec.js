@@ -74,7 +74,9 @@ test.describe('discovery sweep', { tag: '@live' }, () => {
         firstItemMs = Date.now() - start;
         const allNames = await page.getByTestId('wad-audio-filename').allTextContents();
         itemCount = allNames.length;
-        sampleNames = allNames.slice(0, 3);
+        // Capture more samples so we can spot parser/display issues across
+        // a wider variety of real filenames.
+        sampleNames = allNames.slice(0, 5);
       } catch (e) {
         err = String(e instanceof Error ? e.message : e).split('\n')[0].slice(0, 100);
       }

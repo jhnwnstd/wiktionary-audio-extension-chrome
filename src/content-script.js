@@ -230,7 +230,17 @@ function describeDialect(code) {
   return normalizeFieldValue(key);
 }
 
-function parseAudioFilename(raw) {
+function escapeRegex(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Parse a Wiktionary audio filename. The optional `knownWord` is the page
+// title (e.g. "water" or "well-known") — when supplied, the parser anchors
+// the word to a trailing match of that title, which correctly handles both
+// hyphenated speakers ("Jérémy-Günther-Heinz Jähnick") and hyphenated words
+// ("well-known") in the same call. Without context, we assume speakers are
+// more likely to have hyphens than words.
+function parseAudioFilename(raw, knownWord = null) {
   if (!raw) return { lang: null, dialect: null, speaker: null, word: 'audio', ext: '' };
 
   // Strip query string / fragment defensively (real Wikimedia URLs don't carry
@@ -243,8 +253,16 @@ function parseAudioFilename(raw) {
   const ext = extMatch ? extMatch[1].toLowerCase() : '';
   const stem = ext ? base.slice(0, base.length - ext.length - 1) : base;
 
+  // Build LL regexes once. Two flavors per pattern: anchored (uses knownWord
+  // as the trailing word) and unanchored (greedy speaker, last token as word).
+  const wordAnchor = knownWord ? escapeRegex(knownWord) : null;
+
   // LinguaLibre parens-form: LL-Q<num>_(<lang3>)-<speaker>-<word>
-  const ll1 = stem.match(/^LL-Q\d+_\(([a-z]{2,3})\)-([^-]+)-(.+)$/i);
+  if (wordAnchor) {
+    const m = stem.match(new RegExp(`^LL-Q\\d+_\\(([a-z]{2,3})\\)-(.+)-(${wordAnchor})$`, 'i'));
+    if (m) return { lang: m[1].toLowerCase(), dialect: null, speaker: m[2], word: m[3], ext };
+  }
+  const ll1 = stem.match(/^LL-Q\d+_\(([a-z]{2,3})\)-(.+)-([^-]+)$/i);
   if (ll1) {
     return { lang: ll1[1].toLowerCase(), dialect: null, speaker: ll1[2], word: ll1[3], ext };
   }
@@ -252,13 +270,21 @@ function parseAudioFilename(raw) {
   // LinguaLibre hyphenated Q-form: LL-Q<num>-<speaker>-<word>
   // (Q-number references a Wikidata language; we leave lang null rather than
   // bake in a Q-ID → ISO code map.)
-  const ll2 = stem.match(/^LL-Q\d+-([^-]+)-(.+)$/);
+  if (wordAnchor) {
+    const m = stem.match(new RegExp(`^LL-Q\\d+-(.+)-(${wordAnchor})$`));
+    if (m) return { lang: null, dialect: null, speaker: m[1], word: m[2], ext };
+  }
+  const ll2 = stem.match(/^LL-Q\d+-(.+)-([^-]+)$/);
   if (ll2) {
     return { lang: null, dialect: null, speaker: ll2[1], word: ll2[2], ext };
   }
 
   // LinguaLibre speaker-first hyphen form: LL-<speaker>-<lang2or3>-<word>
-  const ll3 = stem.match(/^LL-([^-]+)-([a-z]{2,3})-(.+)$/);
+  if (wordAnchor) {
+    const m = stem.match(new RegExp(`^LL-(.+)-([a-z]{2,3})-(${wordAnchor})$`));
+    if (m) return { lang: m[2].toLowerCase(), dialect: null, speaker: m[1], word: m[3], ext };
+  }
+  const ll3 = stem.match(/^LL-(.+)-([a-z]{2,3})-([^-]+)$/);
   if (ll3) {
     return { lang: ll3[2].toLowerCase(), dialect: null, speaker: ll3[1], word: ll3[3], ext };
   }
@@ -447,14 +473,26 @@ async function discoverAudio(title) {
 
 // ============== DOWNLOAD LOGIC ==============
 
-async function sendDownload(item, mode) {
+async function sendDownload(item, mode, folder) {
   const timeoutMs = mode === 'convert' ? 120000 : 90000;
   return safeSendMessage({
     type: 'DOWNLOAD_AUDIO',
     url: item.url,
     originalFilename: item.downloadName || item.filename,
+    folder,
     mode
   }, { timeoutMs });
+}
+
+// Subfolder name used when the user clicks Download All. Distinctive enough
+// to find in the Downloads folder and tied to the source page.
+//   en.wiktionary.org/wiki/water  → Wiktionary-en-water
+//   de.wiktionary.org/wiki/Wasser → Wiktionary-de-Wasser
+//   ja.wiktionary.org/wiki/水     → Wiktionary-ja-水
+function batchFolderName(hostname, title) {
+  const match = hostname.match(/^([a-z]{2,3})\.wiktionary\.org$/);
+  const edition = match?.[1] || 'wiktionary';
+  return `Wiktionary-${edition}-${title || 'audio'}`;
 }
 
 function showFeedback(button, message, isSuccess = true) {
@@ -511,11 +549,12 @@ async function downloadAll(items, button) {
   const mode = await getMode();
   if (!mode) return;
   const subModes = subModesFor(mode);
+  const folder = batchFolderName(location.hostname, pageTitle);
 
   let ok = 0;
   for (const item of items) {
     try {
-      const results = await Promise.all(subModes.map(m => sendDownload(item, m)));
+      const results = await Promise.all(subModes.map(m => sendDownload(item, m, folder)));
       if (results.every(r => r?.ok)) ok++;
     } catch { /* counted as fail */ }
   }
@@ -524,9 +563,9 @@ async function downloadAll(items, button) {
     showFeedback(button, `${ok}/${items.length} ${t.downloaded}`);
   } else {
     showFeedback(button, t.failed, false);
-    // Fallback: retry all as original
+    // Fallback: retry all as original (still grouped in the same folder).
     for (const item of items) {
-      try { await sendDownload(item, 'original'); } catch {}
+      try { await sendDownload(item, 'original', folder); } catch {}
     }
   }
 }
@@ -584,7 +623,7 @@ function createUI(items) {
         <span>${t.audioFiles}</span>
         <button id="minimize-btn" data-testid="wad-minimize" style="border:0;background:none;color:#666;cursor:pointer;font-size:16px;padding:4px;border-radius:4px" title="Minimize panel">\u2212</button>
       </div>
-      <div class="audio-panel-body" style="max-height:280px;overflow:auto">
+      <div class="audio-panel-body" style="max-height:350px;overflow:auto">
         ${items.map((item, i) => `
           <div data-testid="wad-audio-item" style="display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid #f6f6f6" title="${escapeHtml(item.filename)}">
             <button data-testid="wad-preview" data-preview="${i}" style="border:0;border-radius:6px;width:28px;height:28px;display:grid;place-items:center;background:#eef2f7;color:#1a73e8;cursor:pointer;flex-shrink:0" title="Preview">${PLAY_SVG}</button>
@@ -644,8 +683,10 @@ function createUI(items) {
     // Precompute names once per item:
     //   downloadName — sanitized friendly filename used for the actual save
     //   displayName  — human-readable form for the on-page panel
+    // Pass pageTitle as the word anchor so hyphenated speakers / compound
+    // words (e.g. "well-known") both parse correctly.
     audioFiles.forEach(item => {
-      const parsed = parseAudioFilename(item.filename);
+      const parsed = parseAudioFilename(item.filename, pageTitle);
       item.downloadName = friendlyAudioFilename(parsed);
       item.displayName = humanReadableName(parsed, item.filename);
     });

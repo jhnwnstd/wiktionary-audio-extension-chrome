@@ -151,28 +151,38 @@ async function transcodeToWav(audioUrl, baseName) {
   });
 }
 
+// Prepend an optional subfolder to a sanitized filename. Folder and file are
+// sanitized independently so neither can inject a `/`; the separator is
+// inserted after sanitization. chrome.downloads accepts forward slashes
+// cross-platform and auto-creates intermediate directories.
+function pathWithFolder(folder, filename) {
+  const file = sanitizeFilename(filename);
+  if (!folder) return file;
+  return sanitizeFilename(folder) + '/' + file;
+}
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type !== 'DOWNLOAD_AUDIO') return false;
 
-  const { url, originalFilename, mode } = msg;
+  const { url, originalFilename, mode, folder } = msg;
   const baseName = sanitizeFilename(originalFilename.replace(/\.[^.]+$/, ''));
 
   (async () => {
     if (mode === 'convert') {
-      log('[Background] Converting:', originalFilename);
+      log('[Background] Converting:', originalFilename, folder ? `→ ${folder}/` : '');
       const { filename, arrayBuffer } = await transcodeToWav(url, baseName);
       const base64 = arrayBufferToBase64(arrayBuffer);
       const dataUrl = `data:audio/wav;base64,${base64}`;
       await chrome.downloads.download({
         url: dataUrl,
-        filename: sanitizeFilename(filename),
+        filename: pathWithFolder(folder, filename),
         saveAs: false
       });
     } else {
-      log('[Background] Downloading original:', originalFilename);
+      log('[Background] Downloading original:', originalFilename, folder ? `→ ${folder}/` : '');
       await chrome.downloads.download({
         url,
-        filename: sanitizeFilename(originalFilename)
+        filename: pathWithFolder(folder, originalFilename)
       });
     }
     sendResponse({ ok: true });

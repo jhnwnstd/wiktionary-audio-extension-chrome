@@ -142,18 +142,32 @@ function describeDialect(code) {
   }
   return normalizeFieldValue(key);
 }
-function parseAudioFilename(raw) {
+function escapeRegex(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function parseAudioFilename(raw, knownWord = null) {
   if (!raw) return { lang: null, dialect: null, speaker: null, word: 'audio', ext: '' };
   const decoded = decodeURIComponent(String(raw).split('?')[0].split('#')[0]);
   const base = decoded.split('/').pop() || decoded;
   const extMatch = base.match(/\.([a-z0-9]+)$/i);
   const ext = extMatch ? extMatch[1].toLowerCase() : '';
   const stem = ext ? base.slice(0, base.length - ext.length - 1) : base;
-  const ll1 = stem.match(/^LL-Q\d+_\(([a-z]{2,3})\)-([^-]+)-(.+)$/i);
+  const wordAnchor = knownWord ? escapeRegex(knownWord) : null;
+  if (wordAnchor) {
+    const m = stem.match(new RegExp(`^LL-Q\\d+_\\(([a-z]{2,3})\\)-(.+)-(${wordAnchor})$`, 'i'));
+    if (m) return { lang: m[1].toLowerCase(), dialect: null, speaker: m[2], word: m[3], ext };
+  }
+  const ll1 = stem.match(/^LL-Q\d+_\(([a-z]{2,3})\)-(.+)-([^-]+)$/i);
   if (ll1) return { lang: ll1[1].toLowerCase(), dialect: null, speaker: ll1[2], word: ll1[3], ext };
-  const ll2 = stem.match(/^LL-Q\d+-([^-]+)-(.+)$/);
+  if (wordAnchor) {
+    const m = stem.match(new RegExp(`^LL-Q\\d+-(.+)-(${wordAnchor})$`));
+    if (m) return { lang: null, dialect: null, speaker: m[1], word: m[2], ext };
+  }
+  const ll2 = stem.match(/^LL-Q\d+-(.+)-([^-]+)$/);
   if (ll2) return { lang: null, dialect: null, speaker: ll2[1], word: ll2[2], ext };
-  const ll3 = stem.match(/^LL-([^-]+)-([a-z]{2,3})-(.+)$/);
+  if (wordAnchor) {
+    const m = stem.match(new RegExp(`^LL-(.+)-([a-z]{2,3})-(${wordAnchor})$`));
+    if (m) return { lang: m[2].toLowerCase(), dialect: null, speaker: m[1], word: m[3], ext };
+  }
+  const ll3 = stem.match(/^LL-(.+)-([a-z]{2,3})-([^-]+)$/);
   if (ll3) return { lang: ll3[2].toLowerCase(), dialect: null, speaker: ll3[1], word: ll3[3], ext };
   const ld = stem.match(/^([A-Z][a-z]{0,2})-([a-z][a-z_-]{0,5}[a-z])-(.+)$/);
   if (ld) return { lang: ld[1].toLowerCase(), dialect: ld[2], speaker: null, word: ld[3], ext };
@@ -194,6 +208,20 @@ function humanReadableName(parsed, originalFilename) {
   return parts.join(' ') + (parsed.ext ? ` .${parsed.ext}` : '');
 }
 function humanReadable(raw) { return humanReadableName(parseAudioFilename(raw), raw); }
+
+// Mirrored from src/content-script.js batchFolderName — keep in sync.
+function batchFolderName(hostname, title) {
+  const m = hostname.match(/^([a-z]{2,3})\.wiktionary\.org$/);
+  const edition = m?.[1] || 'wiktionary';
+  return `Wiktionary-${edition}-${title || 'audio'}`;
+}
+
+// Mirrored from src/background.js pathWithFolder — keep in sync.
+function pathWithFolder(folder, filename) {
+  const file = sanitizeFilename(filename);
+  if (!folder) return file;
+  return sanitizeFilename(folder) + '/' + file;
+}
 
 function arrayBufferToBase64(arrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
@@ -381,6 +409,102 @@ assert(
   'speaker underscores → spaces in display'
 );
 assert(humanReadable('Zh-cmn-shuǐ.ogg') === "Chinese Mandarin 'shuǐ' .ogg", 'Chinese topolect dialect → display');
+
+section('Hyphenated speakers and compound words (parser ambiguity)');
+// Hyphenated speaker, simple word — greedy speaker handles this without context.
+const hs1 = parseAudioFilename('LL-Q150_(fra)-Jérémy-Günther-water.wav');
+assert(
+  hs1.lang === 'fra' && hs1.speaker === 'Jérémy-Günther' && hs1.word === 'water',
+  'hyphenated speaker, simple word: speaker=Jérémy-Günther, word=water'
+);
+// Same file with explicit knownWord — still parses correctly.
+const hs2 = parseAudioFilename('LL-Q150_(fra)-Jérémy-Günther-water.wav', 'water');
+assert(
+  hs2.speaker === 'Jérémy-Günther' && hs2.word === 'water',
+  'hyphenated speaker with anchor: same result'
+);
+// Real-world case from the live sweep: long compound name with space.
+const hs3 = parseAudioFilename('LL-Q150_(fra)-Jérémy-Günther-Heinz Jähnick-water.wav');
+assert(
+  hs3.speaker === 'Jérémy-Günther-Heinz Jähnick' && hs3.word === 'water',
+  'multi-hyphen compound name resolves to single speaker'
+);
+
+// Compound WORD without anchor: degrades — last token becomes word.
+const cw1 = parseAudioFilename('LL-Q1860_(eng)-Stebbington-well-known.wav');
+assert(
+  cw1.speaker === 'Stebbington-well' && cw1.word === 'known',
+  'no anchor: compound word degrades (acceptable fallback)'
+);
+// With knownWord='well-known', anchor recovers the right split.
+const cw2 = parseAudioFilename('LL-Q1860_(eng)-Stebbington-well-known.wav', 'well-known');
+assert(
+  cw2.speaker === 'Stebbington' && cw2.word === 'well-known',
+  'knownWord anchor recovers compound word'
+);
+// Ambiguous case: both speaker AND word have hyphens. Anchor disambiguates.
+const cw3 = parseAudioFilename('LL-Q150_(fra)-Jérémy-Günther-well-known.wav', 'well-known');
+assert(
+  cw3.speaker === 'Jérémy-Günther' && cw3.word === 'well-known',
+  'both-have-hyphens disambiguated by knownWord'
+);
+
+// LL hyphenated Q-form still works with hyphenated speakers + anchor.
+const llQH1 = parseAudioFilename('LL-Q9186-Justinrleung-Wang-水.wav', '水');
+assert(
+  llQH1.speaker === 'Justinrleung-Wang' && llQH1.word === '水',
+  'LL2 hyphenated speaker with CJK anchor'
+);
+
+// LL speaker-first form: speaker can also have hyphens here.
+const llSH1 = parseAudioFilename('LL-Foo-Bar-fr-eau.wav', 'eau');
+assert(
+  llSH1.lang === 'fr' && llSH1.speaker === 'Foo-Bar' && llSH1.word === 'eau',
+  'LL3 hyphenated speaker with anchor'
+);
+
+// Compound word with greedy default (no anchor) — speaker absorbs hyphen
+// regions but the lang code anchor still works because lang must be 2-3 chars.
+const llSH2 = parseAudioFilename('LL-Speaker-fr-eau.wav');
+assert(
+  llSH2.lang === 'fr' && llSH2.speaker === 'Speaker' && llSH2.word === 'eau',
+  'LL3 simple case unchanged'
+);
+
+// Non-LL cases unaffected by the new regex.
+assert(parseAudioFilename('En-au-Georgian.ogg', 'Georgian').dialect === 'au', 'non-LL parser still works with anchor arg');
+assert(parseAudioFilename('De-Wasser.ogg').lang === 'de', 'non-LL parser still works without anchor arg');
+
+section('Batch download folder grouping');
+assert(batchFolderName('en.wiktionary.org', 'water') === 'Wiktionary-en-water', 'en/water folder name');
+assert(batchFolderName('de.wiktionary.org', 'Wasser') === 'Wiktionary-de-Wasser', 'de/Wasser folder name');
+assert(batchFolderName('ja.wiktionary.org', '水') === 'Wiktionary-ja-水', 'CJK folder name preserved');
+assert(batchFolderName('fr.wiktionary.org', 'eau') === 'Wiktionary-fr-eau', 'fr/eau folder name');
+assert(batchFolderName('example.com', 'foo') === 'Wiktionary-wiktionary-foo', 'non-wiktionary fallback edition');
+assert(batchFolderName('en.wiktionary.org', '') === 'Wiktionary-en-audio', 'empty title falls back to "audio"');
+
+// pathWithFolder composes the final chrome.downloads filename.
+assert(pathWithFolder(null, 'foo.ogg') === 'foo.ogg', 'no folder → just filename');
+assert(pathWithFolder('', 'foo.ogg') === 'foo.ogg', 'empty folder → just filename');
+assert(
+  pathWithFolder('Wiktionary-en-water', 'english_american_water.ogg') === 'Wiktionary-en-water/english_american_water.ogg',
+  'folder + file joined with /'
+);
+assert(
+  pathWithFolder('Wiktionary-ja-水', 'chinese_shuǐ.ogg') === 'Wiktionary-ja-水/chinese_shuǐ.ogg',
+  'unicode preserved in both folder and filename'
+);
+// Defense in depth: a `/` in the folder or file gets sanitized away before
+// the separator is added, so the user can't accidentally escape into a deeper
+// directory tree.
+assert(
+  pathWithFolder('bad/folder', 'foo.ogg') === 'bad_folder/foo.ogg',
+  'slash in folder sanitized to underscore'
+);
+assert(
+  pathWithFolder('folder', 'bad/file.ogg') === 'folder/bad_file.ogg',
+  'slash in filename sanitized to underscore'
+);
 
 section('Dynamic language coverage via Intl.DisplayNames');
 // These languages are NOT in any hardcoded table. They flow through
