@@ -1,5 +1,7 @@
 # Wiktionary Audio Downloader
 
+[![CI](https://github.com/jhnwnstd/wiktionary-audio-extension-chrome/actions/workflows/ci.yml/badge.svg)](https://github.com/jhnwnstd/wiktionary-audio-extension-chrome/actions/workflows/ci.yml)
+
 Chrome extension that finds pronunciation audio on Wiktionary pages.
 
 Download the original audio file or convert it to WAV locally with vendored FFmpeg.wasm.

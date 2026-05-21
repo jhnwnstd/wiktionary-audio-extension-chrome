@@ -1,0 +1,28 @@
+name: Live smoke
+
+# Run the live Wiktionary sweep on demand and weekly. Kept out of the
+# PR-blocking CI because it depends on network + real Wikimedia content,
+# which can rate-limit or change in ways that aren't extension regressions.
+on:
+  workflow_dispatch:
+  schedule:
+    # Mondays at 12:00 UTC
+    - cron: '0 12 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    name: Live Wiktionary sweep
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:live
