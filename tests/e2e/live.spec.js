@@ -210,3 +210,94 @@ test.describe('download paths', { tag: '@live' }, () => {
     downloadMetrics.push({ label: 'Convert: click->ack (cold full path)', ms: ackMs });
   });
 });
+
+// Viewport sweep against a real Wiktionary page. Per viewport size:
+//   1) hard guard -- panel must be fully inside the viewport (no clipping)
+//   2) soft metric -- measure overlap with article text, log + screenshot
+//
+// Overlap with the article is logged rather than asserted: some overlap is
+// expected on viewports below 1920 because Wiktionary's content extends close
+// to the right edge there. Use the metric + screenshots to decide whether
+// to tighten the clamp() values in src/content-script.js.
+const VIEWPORT_MATRIX = [
+  { width: 1280, height: 720 },
+  { width: 1366, height: 768 },
+  { width: 1536, height: 864 },
+  { width: 1920, height: 1080 },
+];
+
+const SCREENSHOT_DIR = path.resolve(__dirname, '../screenshots');
+
+/** @type {Array<{viewport: string, panelX: number, articleRight: number, overlap: number}>} */
+const overlapMetrics = [];
+
+test.describe('viewport overlap + screenshots', { tag: '@live' }, () => {
+  /** @type {import('@playwright/test').BrowserContext} */
+  let context;
+
+  test.beforeAll(() => {
+    fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
+  });
+
+  test.beforeEach(async () => {
+    context = await launchContext();
+  });
+
+  test.afterEach(async () => {
+    await context.close();
+  });
+
+  test.afterAll(() => {
+    if (!overlapMetrics.length) return;
+    console.log('\n========= Panel overlap with article =========');
+    console.log('Viewport'.padEnd(13) + ' panel.x' + ' article.r' + ' overlap');
+    for (const m of overlapMetrics) {
+      console.log(
+        m.viewport.padEnd(13) +
+          String(Math.round(m.panelX)).padStart(8) +
+          String(Math.round(m.articleRight)).padStart(10) +
+          String(Math.round(m.overlap)).padStart(8) + 'px'
+      );
+    }
+    console.log(`\n  Screenshots: ${SCREENSHOT_DIR}`);
+  });
+
+  for (const vp of VIEWPORT_MATRIX) {
+    test(`panel layout at ${vp.width}x${vp.height}`, async () => {
+      const page = await context.newPage();
+      await page.setViewportSize(vp);
+      await page.goto('https://en.wiktionary.org/wiki/water', {
+        waitUntil: 'domcontentloaded',
+        timeout: 30_000,
+      });
+
+      const panelLoc = page.getByTestId('wad-panel');
+      await panelLoc.waitFor({ state: 'visible', timeout: 15_000 });
+
+      const panel = await panelLoc.boundingBox();
+      const article = await page.locator('#mw-content-text').boundingBox();
+      if (!panel || !article) {
+        throw new Error('panel or article has no bounding box');
+      }
+
+      // Hard guard: panel must not extend past the viewport.
+      expect(panel.x + panel.width).toBeLessThanOrEqual(vp.width);
+      expect(panel.y + panel.height).toBeLessThanOrEqual(vp.height);
+
+      // Soft metric: how far does the panel overlap article text?
+      const articleRight = article.x + article.width;
+      const overlap = Math.max(0, articleRight - panel.x);
+      overlapMetrics.push({
+        viewport: `${vp.width}x${vp.height}`,
+        panelX: panel.x,
+        articleRight,
+        overlap,
+      });
+
+      await page.screenshot({
+        path: path.join(SCREENSHOT_DIR, `water-${vp.width}x${vp.height}.png`),
+        fullPage: false,
+      });
+    });
+  }
+});

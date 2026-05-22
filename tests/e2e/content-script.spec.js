@@ -149,6 +149,58 @@ test.describe('content script audio discovery', () => {
     await expect(page.getByTestId('wad-preview')).toHaveCount(1);
   });
 
+  // Geometry sweep -- verifies the clamp()-based responsive sizing keeps the
+  // panel inside the viewport on the screen sizes from the test matrix. Uses
+  // 20 mocked items so the body fills past its height cap and the assertions
+  // actually exercise the clamp ceiling.
+  for (const viewport of [
+    { width: 1280, height: 720 },
+    { width: 1366, height: 768 },
+    { width: 1536, height: 864 },
+    { width: 1920, height: 1080 },
+  ]) {
+    test(`panel fits viewport at ${viewport.width}x${viewport.height}`, async () => {
+      await context.route('**/w/api.php**', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(
+            actionApiResponse(
+              Array.from({ length: 20 }, (_, i) => ({
+                title: `File:En-us-word${i}.ogg`,
+                url: `https://upload.wikimedia.org/x/En-us-word${i}.ogg`,
+              }))
+            )
+          ),
+        })
+      );
+
+      const page = await context.newPage();
+      await page.setViewportSize(viewport);
+      await page.goto(WATER_URL);
+
+      const panel = page.getByTestId('wad-panel');
+      await expect(panel).toBeVisible();
+      const box = await panel.boundingBox();
+      if (!box) throw new Error('panel has no bounding box');
+
+      // Width ceiling = clamp top (380). Floor is 260, but at 1280+ the
+      // 22vw middle term always exceeds 260 so the floor is not exercised.
+      expect(box.width).toBeLessThanOrEqual(380);
+      expect(box.width).toBeGreaterThanOrEqual(260);
+
+      // Panel must not extend past the viewport in either axis. 16px is the
+      // resolved edge-gap on these widths (1.25vw > 16 -> clamped to 16).
+      expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+      expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+
+      // Height ceiling = header + body(clamp(180, 55vh, 500)) + footer. The
+      // header/footer total ~100px; cap is whichever of 55vh / 500 is smaller.
+      const bodyCap = Math.min(500, viewport.height * 0.55);
+      expect(box.height).toBeLessThanOrEqual(bodyCap + 120);
+    });
+  }
+
   test('renders nothing when no audio is discovered', async () => {
     await context.route('**/w/api.php**', (route) =>
       route.fulfill({

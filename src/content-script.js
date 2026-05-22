@@ -806,27 +806,29 @@ function createUI(items) {
 
   const panel = document.createElement('div');
   // Outer positioner -- viewport caps guarantee the panel always fits on
-  // screen regardless of window size. Flex column lets the inner panel
-  // shrink its scrollable body when the viewport is too short for the
-  // preferred max-height.
+  // screen regardless of window size. --wad-edge-gap shrinks the margin on
+  // very narrow viewports; on 1280+ desktops it pins at 16px. Flex column
+  // lets the inner panel shrink its scrollable body when the viewport is
+  // too short for the preferred max-height.
   panel.style.cssText = [
+    '--wad-edge-gap:clamp(8px, 1.25vw, 16px)',
     'position:fixed',
-    'right:16px',
-    'bottom:16px',
+    'right:var(--wad-edge-gap)',
+    'bottom:var(--wad-edge-gap)',
     'z-index:2147483647',
     'font:13px system-ui',
-    'max-width:calc(100vw - 32px)',
-    'max-height:calc(100vh - 32px)',
+    'max-width:calc(100vw - (2 * var(--wad-edge-gap)))',
+    'max-height:calc(100vh - (2 * var(--wad-edge-gap)))',
     'display:flex',
     'flex-direction:column',
   ].join(';');
   panel.innerHTML = `
-    <div id="audio-panel" data-testid="wad-panel" style="background:#fff;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25);width:380px;max-width:100%;max-height:100%;display:flex;flex-direction:column;overflow:hidden">
+    <div id="audio-panel" data-testid="wad-panel" style="background:#fff;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25);width:clamp(260px, 22vw, 380px);max-width:100%;max-height:100%;display:flex;flex-direction:column;overflow:hidden">
       <div style="padding:10px 12px;border-bottom:1px solid #eee;font-weight:600;display:flex;justify-content:space-between;align-items:center;flex-shrink:0" title="Pronunciation audio found on this Wiktionary page by the Wiktionary Audio Downloader extension">
         <span>${t.audioFiles}</span>
         <button id="minimize-btn" data-testid="wad-minimize" style="border:0;background:none;color:#666;cursor:pointer;font-size:16px;padding:4px;border-radius:4px" title="Minimize panel">\u2212</button>
       </div>
-      <div class="audio-panel-body" style="flex:1 1 auto;overflow:auto;max-height:500px">
+      <div class="audio-panel-body" style="flex:1 1 auto;overflow:auto;max-height:clamp(180px, 55vh, 500px)">
         ${items.map((item, i) => `
           <div data-testid="wad-audio-item" style="display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid #f6f6f6" title="${escapeHtml(item.filename)}">
             <button data-testid="wad-preview" data-preview="${i}" style="border:0;border-radius:6px;width:28px;height:28px;display:grid;place-items:center;background:#eef2f7;color:#1a73e8;cursor:pointer;flex-shrink:0" title="Preview">${PLAY_SVG}</button>
