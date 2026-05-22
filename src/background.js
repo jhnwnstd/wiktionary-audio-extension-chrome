@@ -1,14 +1,26 @@
+// @ts-check
 // background.js -- Service worker for Wiktionary audio downloads
+//
+// Wrapped in an IIFE so `DEBUG`, `log`, `logError` are function-scoped
+// rather than file-scoped, avoiding cross-file collisions with the same
+// identifiers in content-script.js when both files are type-checked under
+// the project's jsconfig. Service-worker behavior is unchanged.
+(() => {
 
 const DEBUG = false;
 const log = DEBUG ? console.log.bind(console) : () => {};
 const logError = console.error.bind(console);
 
+/** @param {ArrayBuffer} arrayBuffer */
 function arrayBufferToBase64(arrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
+  // Fast path for small payloads. `String.fromCharCode(...bytes)` can throw
+  // RangeError ("Maximum call stack size exceeded") for very large spreads
+  // even below 64K on some engines, so we wrap it and fall through to the
+  // chunked loop on failure.
   try {
     if (bytes.length < 65536) return btoa(String.fromCharCode(...bytes));
-  } catch {}
+  } catch { /* fall through to chunked path */ }
   let bin = '';
   for (let i = 0; i < bytes.length; i += 8192) {
     bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
@@ -33,10 +45,16 @@ const WINDOWS_RESERVED_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
 const FORBIDDEN_CHARS_RE = /[<>:"/\\|?*\x00-\x1f]/g;
 const UTF8_ENCODER = new TextEncoder();
 
+/** @param {string} s */
 function utf8ByteLength(s) {
   return UTF8_ENCODER.encode(s).length;
 }
 
+/**
+ * @param {string} s
+ * @param {number} maxBytes
+ * @returns {string}
+ */
 function truncateToBytes(s, maxBytes) {
   if (utf8ByteLength(s) <= maxBytes) return s;
   let result = s;
@@ -46,6 +64,12 @@ function truncateToBytes(s, maxBytes) {
   return result;
 }
 
+/**
+ * Sanitize a filename to be safe across Windows, macOS, and Linux file
+ * systems while preserving Unicode characters.
+ * @param {unknown} filename
+ * @returns {string}
+ */
 function sanitizeFilename(filename) {
   if (typeof filename !== 'string' || !filename) return 'audio';
 
@@ -72,7 +96,11 @@ function sanitizeFilename(filename) {
   return s || 'audio';
 }
 
-// Ping offscreen via Port, returns a Promise that resolves on PONG
+/**
+ * Ping the offscreen document and resolve when it responds with PONG.
+ * @param {number} [timeoutMs]
+ * @returns {Promise<void>}
+ */
 function pingOffscreen(timeoutMs = 3000) {
   return new Promise((resolve, reject) => {
     const port = chrome.runtime.connect({ name: 'ffmpeg' });
@@ -81,7 +109,7 @@ function pingOffscreen(timeoutMs = 3000) {
       reject(new Error('ping timeout'));
     }, timeoutMs);
 
-    port.onMessage.addListener(function onPong(msg) {
+    port.onMessage.addListener(/** @param {any} msg */ function onPong(msg) {
       if (msg.type === 'PONG') {
         clearTimeout(timer);
         port.onMessage.removeListener(onPong);
@@ -118,6 +146,12 @@ async function ensureOffscreen() {
   throw new Error('Offscreen document failed to respond after retries');
 }
 
+/**
+ * Send a TRANSCODE request to the offscreen FFmpeg worker.
+ * @param {string} audioUrl
+ * @param {string} baseName - filename without extension; offscreen appends `.wav`
+ * @returns {Promise<{ filename: string, arrayBuffer: ArrayBuffer }>}
+ */
 async function transcodeToWav(audioUrl, baseName) {
   log('[Background] Starting transcode...');
   await ensureOffscreen();
@@ -129,7 +163,7 @@ async function transcodeToWav(audioUrl, baseName) {
       reject(new Error('Transcoding timeout (90s)'));
     }, 90000);
 
-    port.onMessage.addListener((msg) => {
+    port.onMessage.addListener(/** @param {any} msg */ (msg) => {
       clearTimeout(timeout);
       port.disconnect();
 
@@ -155,13 +189,24 @@ async function transcodeToWav(audioUrl, baseName) {
 // sanitized independently so neither can inject a `/`; the separator is
 // inserted after sanitization. chrome.downloads accepts forward slashes
 // cross-platform and auto-creates intermediate directories.
+/**
+ * @param {string | undefined | null} folder
+ * @param {string} filename
+ * @returns {string}
+ */
 function pathWithFolder(folder, filename) {
   const file = sanitizeFilename(filename);
   if (!folder) return file;
   return sanitizeFilename(folder) + '/' + file;
 }
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener(
+  /**
+   * @param {any} msg - arbitrary content; we narrow on `msg.type`
+   * @param {any} _sender
+   * @param {(response: DownloadResponse) => void} sendResponse
+   */
+  (msg, _sender, sendResponse) => {
   if (msg?.type !== 'DOWNLOAD_AUDIO') return false;
 
   const { url, originalFilename, mode, folder } = msg;
@@ -193,3 +238,5 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   return true; // Keep channel open for async response
 });
+
+})();

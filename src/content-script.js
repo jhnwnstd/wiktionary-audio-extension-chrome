@@ -1,7 +1,44 @@
+// @ts-check
 // content-script.js -- Wiktionary audio discovery, UI panel, download actions
 
-const DEBUG = false;
-const log = DEBUG ? console.log.bind(console) : () => {};
+/**
+ * One pronunciation audio entry surfaced by Action API discovery. The two
+ * `*Name` fields are computed from `filename` after parsing and are what
+ * the panel and download path actually use.
+ * @typedef {object} AudioItem
+ * @property {string} title - MediaWiki File: title
+ * @property {string} url - direct upload.wikimedia.org URL
+ * @property {string} filename - source filename (e.g. "En-us-water.ogg")
+ * @property {string} [mime]
+ * @property {number} [size]
+ * @property {string} [downloadName] - sanitized friendly filename for chrome.downloads
+ * @property {string} [displayName] - human-readable form rendered in the panel
+ * @property {string|null} [lang] - parsed ISO 639 code, used by the English-first sort
+ */
+
+/**
+ * Structured fields extracted from a Wiktionary audio filename. Any field
+ * can be null when the parser can't recover it; downstream formatters skip
+ * null fields rather than emitting an empty token.
+ * @typedef {object} ParsedFilename
+ * @property {string|null} lang
+ * @property {string|null} dialect
+ * @property {string|null} speaker
+ * @property {string} word
+ * @property {string|null} extra - phonetic qualifier (e.g. "cot-caught-merger")
+ * @property {string} ext - extension without leading dot, lowercased
+ */
+
+// DownloadMessage and DownloadResponse are declared ambient in
+// src/globals.d.ts so this file and background.js share the same shape
+// without per-file @typedef blocks colliding under the project's jsconfig.
+//
+// The whole file is wrapped in an IIFE so `DEBUG`, `log`, `logError` are
+// function-scoped (not global), avoiding cross-file collisions with the
+// same identifiers in background.js. Behavior in the isolated content
+// script world is unchanged.
+(() => {
+
 const logError = console.error.bind(console);
 
 // ============== EXTENSION CONTEXT ==============
@@ -10,6 +47,14 @@ function isExtensionContextValid() {
   try { return !!chrome.runtime?.id; } catch { return false; }
 }
 
+/**
+ * Send a message to the service worker, race it against a timeout, and
+ * surface chrome.runtime.lastError as a rejection. Resolves with whatever
+ * the background's `sendResponse` produced.
+ * @param {object} message
+ * @param {{ timeoutMs?: number }} [opts]
+ * @returns {Promise<DownloadResponse | undefined>}
+ */
 async function safeSendMessage(message, { timeoutMs = 90000 } = {}) {
   if (!isExtensionContextValid()) {
     showContextInvalidatedMessage();
@@ -267,6 +312,7 @@ function describeDialect(code) {
   return normalizeFieldValue(key);
 }
 
+/** @param {string} s */
 function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -277,6 +323,13 @@ function escapeRegex(s) {
 // hyphenated speakers ("Jérémy-Günther-Heinz Jähnick") and hyphenated words
 // ("well-known") in the same call. Without context, we assume speakers are
 // more likely to have hyphens than words.
+/**
+ * Parse a Wiktionary audio filename into structured fields.
+ * @param {string} raw - filename or URL; query string is stripped defensively
+ * @param {string|null} [knownWord] - page title used to anchor the trailing
+ *   `word` segment for compound speakers / phonetic-extra cases
+ * @returns {ParsedFilename}
+ */
 function parseAudioFilename(raw, knownWord = null) {
   if (!raw) return { lang: null, dialect: null, speaker: null, word: 'audio', extra: null, ext: '' };
 
@@ -375,6 +428,12 @@ function parseAudioFilename(raw, knownWord = null) {
   return { lang: null, dialect: null, speaker: null, word: stem, extra: null, ext };
 }
 
+/**
+ * Compose the sanitized filename used for the actual chrome.downloads save.
+ * `_` joins different fields; within-field separators are already `-`.
+ * @param {ParsedFilename} parsed
+ * @returns {string}
+ */
 function friendlyAudioFilename(parsed) {
   const parts = [];
   const lang = describeLanguage(parsed.lang);
@@ -405,6 +464,14 @@ function titleCasePart(s) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+/**
+ * Render a parsed filename as the human-readable string shown in the panel.
+ * Unparseable inputs (no lang/dialect/speaker) fall back to the source
+ * filename verbatim so the user can still recognize what they're looking at.
+ * @param {ParsedFilename} parsed
+ * @param {string} originalFilename
+ * @returns {string}
+ */
 function humanReadableName(parsed, originalFilename) {
   if (!parsed.lang && !parsed.dialect && !parsed.speaker) {
     return originalFilename;
@@ -473,6 +540,13 @@ function isAudioInfo(info) {
   return false;
 }
 
+/**
+ * Filter an Action API `pages` array down to audio entries with the fields
+ * we care about. Strips any URL query/fragment defensively. Typed as `any[]`
+ * because MediaWiki responses don't have a stable TypeScript shape.
+ * @param {any[]} pages
+ * @returns {AudioItem[]}
+ */
 function audioItemsFromPages(pages) {
   if (!Array.isArray(pages)) return [];
   const results = [];
@@ -501,35 +575,27 @@ async function fetchJson(url) {
   return response.json();
 }
 
-// Walk the rendered page to find which audio files appear and in what order.
-// We use this as a presentation hint: items returned by the Action API are
-// sorted to match the order the user sees on the page. Items that aren't
-// referenced in the DOM (rare) drop to the end of the list in API order.
-//
-// Cross-edition note: Wiktionary file-page links use the `File:` prefix on
-// English but localized prefixes on other editions (Datei: on de, Fichier:
-// on fr, etc.). We match by the trailing audio-file extension instead of
-// the prefix, so this works on any edition.
-function findDomAudioOrder() {
-  const order = new Map();
-  let counter = 0;
-  // <audio><source> is the canonical rendered form; <a href="...File:...ogg">
-  // catches edits that link to file pages directly.
-  const candidates = document.querySelectorAll('audio source[src], a[href]');
-  for (const el of candidates) {
-    const url = el.getAttribute('src') || el.getAttribute('href') || '';
-    const m = url.match(/[/:]([^/?#:]+\.(?:ogg|oga|opus|mp3|wav|webm|m4a|aac|flac))(?:[?#]|$)/i);
-    if (!m) continue;
-    const filename = decodeURIComponent(m[1]);
-    if (!order.has(filename)) order.set(filename, counter++);
-  }
-  return order;
+/**
+ * True for ISO 639-1 `en` and 639-3 `eng` so English entries can be pinned
+ * to the top of the panel regardless of where they appear on the page.
+ * @param {string|null|undefined} lang
+ * @returns {boolean}
+ */
+function isEnglishLang(lang) {
+  if (!lang) return false;
+  const code = String(lang).toLowerCase();
+  return code === 'en' || code === 'eng';
 }
 
 // Discover all audio files attached to a page via Action API. Handles
 // generator continuation so long entries (e.g. fr/eau with 33+ items) aren't
 // truncated. formatversion=2 gives us pages as an array -- cleaner than the
 // v1 object-keyed-by-pageid format.
+/**
+ * Discover all audio files attached to a page via Action API.
+ * @param {string} title
+ * @returns {Promise<AudioItem[]>}
+ */
 async function discoverAudio(title) {
   const baseParams = {
     action: 'query',
@@ -694,12 +760,13 @@ async function downloadAll(items, button) {
 
 // ============== UI ==============
 
-// SVG glyphs for preview controls. No emoji \u2014 vector icons render cleanly at
-// any size and play nicely with currentColor for theming.
+// SVG glyphs for preview controls. No emoji -- vector icons render cleanly
+// at any size and inherit page color via currentColor.
 const PLAY_SVG = `<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>`;
 const PAUSE_SVG = `<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z" fill="currentColor"/></svg>`;
 
-// Single Audio instance is enough \u2014 switching items pauses the previous one.
+// One Audio instance at a time -- switching items pauses the previous one.
+/** @type {{ audio: HTMLAudioElement, button: HTMLButtonElement } | null} */
 let activePreview = null;
 
 function previewAudio(item, button) {
@@ -761,23 +828,24 @@ function createUI(items) {
 
   // Delegated click handling for preview + download buttons.
   panel.addEventListener('click', e => {
-    const preview = e.target.closest('button[data-preview]');
+    const target = /** @type {HTMLElement} */ (e.target);
+    const preview = /** @type {HTMLButtonElement | null} */ (target.closest('button[data-preview]'));
     if (preview) {
       previewAudio(items[Number(preview.dataset.preview)], preview);
       return;
     }
-    const dl = e.target.closest('button[data-i]');
+    const dl = /** @type {HTMLButtonElement | null} */ (target.closest('button[data-i]'));
     if (dl) downloadFile(items[Number(dl.dataset.i)], dl);
   });
 
   // Batch button
-  const batchBtn = panel.querySelector('#dl-all');
+  const batchBtn = /** @type {HTMLButtonElement | null} */ (panel.querySelector('#dl-all'));
   if (batchBtn) batchBtn.onclick = () => downloadAll(items, batchBtn);
 
-  // Minimize/restore \u2014 pauses any active preview when collapsing.
-  const minimizeBtn = panel.querySelector('#minimize-btn');
-  const body = panel.querySelector('.audio-panel-body');
-  const footer = panel.querySelector('.audio-panel-footer');
+  // Minimize/restore -- pauses any active preview when collapsing.
+  const minimizeBtn = /** @type {HTMLButtonElement} */ (panel.querySelector('#minimize-btn'));
+  const body = /** @type {HTMLElement | null} */ (panel.querySelector('.audio-panel-body'));
+  const footer = /** @type {HTMLElement | null} */ (panel.querySelector('.audio-panel-footer'));
   let minimized = false;
 
   minimizeBtn.onclick = () => {
@@ -788,8 +856,8 @@ function createUI(items) {
     minimizeBtn.textContent = minimized ? '+' : '\u2212';
     minimizeBtn.title = minimized ? 'Expand panel' : 'Minimize panel';
   };
-  minimizeBtn.onmouseover = () => minimizeBtn.style.background = '#f0f1f3';
-  minimizeBtn.onmouseout = () => minimizeBtn.style.background = 'none';
+  minimizeBtn.onmouseover = () => { minimizeBtn.style.background = '#f0f1f3'; };
+  minimizeBtn.onmouseout = () => { minimizeBtn.style.background = 'none'; };
 
   document.documentElement.appendChild(panel);
 }
@@ -805,26 +873,31 @@ function createUI(items) {
     // Precompute names once per item:
     //   downloadName -- sanitized friendly filename used for the actual save
     //   displayName  -- human-readable form for the on-page panel
+    //   lang         -- parsed language code, used by the English-first sort
     // Pass pageTitle as the word anchor so hyphenated speakers / compound
     // words (e.g. "well-known") both parse correctly.
     audioFiles.forEach(item => {
       const parsed = parseAudioFilename(item.filename, pageTitle);
       item.downloadName = friendlyAudioFilename(parsed);
       item.displayName = humanReadableName(parsed, item.filename);
+      item.lang = parsed.lang;
     });
 
-    // Reorder items to match the on-page order (what the user sees in the
-    // Pronunciation section). Items not found in the DOM stay in API order
-    // after the DOM-anchored items.
-    const domOrder = findDomAudioOrder();
-    let fallbackOrder = domOrder.size;
-    audioFiles.forEach(item => {
-      item.order = domOrder.has(item.filename) ? domOrder.get(item.filename) : fallbackOrder++;
+    // Display order: English entries first (Wiktionary's primary user base),
+    // then everything else alphabetically by the displayed name. Within each
+    // group, displayName comparison gives a stable, intuitive ordering --
+    // English dialects sort together, non-English languages sort by name.
+    audioFiles.sort((a, b) => {
+      const aEn = isEnglishLang(a.lang);
+      const bEn = isEnglishLang(b.lang);
+      if (aEn !== bEn) return aEn ? -1 : 1;
+      return (a.displayName || '').localeCompare(b.displayName || '');
     });
-    audioFiles.sort((a, b) => a.order - b.order);
 
     if (audioFiles.length) createUI(audioFiles);
   } catch (error) {
     logError('[Wiktionary Audio] Discovery failed:', error);
   }
+})();
+
 })();

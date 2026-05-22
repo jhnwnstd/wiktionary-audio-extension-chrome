@@ -1,12 +1,19 @@
+// @ts-check
 // popup.js -- Settings for download mode (Original / Convert / Both)
 
-const radios = [...document.querySelectorAll('input[name="mode"]')];
-const wavWarning = document.getElementById('wav-warning');
-const statusEl = document.getElementById('status');
+/** @type {HTMLInputElement[]} */
+const radios = /** @type {HTMLInputElement[]} */ (
+  [...document.querySelectorAll('input[name="mode"]')]
+);
+const wavWarning = /** @type {HTMLElement} */ (document.getElementById('wav-warning'));
+const statusEl = /** @type {HTMLElement} */ (document.getElementById('status'));
+/** @type {number | null} */
 let statusTimer = null;
 
+/** @returns {'original' | 'convert' | 'both'} */
 function getSelectedMode() {
-  return radios.find(r => r.checked)?.value || 'original';
+  const v = radios.find(r => r.checked)?.value;
+  return v === 'convert' || v === 'both' ? v : 'original';
 }
 
 function updateWarningVisibility() {
@@ -14,6 +21,11 @@ function updateWarningVisibility() {
   wavWarning.classList.toggle('show', mode === 'convert' || mode === 'both');
 }
 
+/**
+ * @param {string} message
+ * @param {'success' | 'error'} type
+ * @param {number} [duration]
+ */
 function showStatus(message, type, duration = 1500) {
   statusEl.textContent = message;
   statusEl.className = `status ${type}`;
