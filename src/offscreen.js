@@ -22,17 +22,6 @@ async function loadFFmpeg() {
     const start = Date.now();
 
     try {
-      if (DEBUG) {
-        const NativeWorker = Worker;
-        self.Worker = function(url, opts) {
-          log('[Offscreen] Worker created:', new URL(url, location.href).href, opts);
-          const w = new NativeWorker(url, opts);
-          w.addEventListener('error', e => logError('[Offscreen] Worker error:', e));
-          w.addEventListener('message', e => log('[Offscreen] Worker msg:', e.data?.cmd || e.data?.type));
-          return w;
-        };
-      }
-
       const timeout = new Promise((_, reject) =>
         setTimeout(() => reject(new Error('FFmpeg load timeout (60s)')), 60000)
       );
@@ -101,20 +90,6 @@ async function runTranscode(inName, outName) {
   await ffmpeg.exec(args);
 }
 
-function logOutputWavHeader(buffer) {
-  if (!DEBUG) return;
-  try {
-    const view = new DataView(buffer);
-    if (view.byteLength < 44) return;
-    const riff = String.fromCharCode.apply(null, new Uint8Array(buffer, 0, 4));
-    const wave = String.fromCharCode.apply(null, new Uint8Array(buffer, 8, 4));
-    const channels = view.getUint16(22, true);
-    const sampleRate = view.getUint32(24, true);
-    const bitsPerSample = view.getUint16(34, true);
-    log('[Offscreen] output WAV header:', { riff, wave, channels, sampleRate, bitsPerSample, bytes: view.byteLength });
-  } catch { /* header decoded best-effort */ }
-}
-
 // All communication uses Port-based messaging
 chrome.runtime.onConnect.addListener(port => {
   if (port.name !== 'ffmpeg') return;
@@ -155,7 +130,6 @@ chrome.runtime.onConnect.addListener(port => {
 
       const out = await ffmpeg.readFile(outName);
       log('[Offscreen] Converted:', out.buffer.byteLength, 'bytes');
-      logOutputWavHeader(out.buffer);
       await cleanupFiles(inName, outName);
 
       // Send result as regular array (JSON-serializable over Port)

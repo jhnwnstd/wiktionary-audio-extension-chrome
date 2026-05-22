@@ -126,17 +126,35 @@ test.describe('content script audio discovery', () => {
     await expect(page.getByTestId('wad-download-all')).toHaveCount(0);
   });
 
-  test('renders preview button per item', async () => {
+  // Failure-mode coverage: if the MediaWiki API returns 5xx the extension
+  // must fail quietly. No panel, no console crash, no infinite spinner.
+  test('renders nothing when the API returns 500', async () => {
+    await context.route('**/w/api.php**', (route) =>
+      route.fulfill({ status: 500, contentType: 'text/plain', body: 'boom' })
+    );
+
+    const page = await context.newPage();
+    await page.goto(WATER_URL);
+
+    // Give the content script time to attempt discovery + decide not to inject.
+    await page.waitForLoadState('domcontentloaded');
+    await page.waitForTimeout(500);
+
+    await expect(page.getByTestId('wad-panel')).toHaveCount(0);
+  });
+
+  // Minimize collapses the body/footer; clicking again restores them. Button
+  // text toggles between minus (U+2212) and plus. Validates the only on-panel
+  // user control beyond preview/download.
+  test('minimize button toggles body visibility', async () => {
     await context.route('**/w/api.php**', (route) =>
       route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify(
           actionApiResponse([
-            {
-              title: 'File:En-us-water.ogg',
-              url: 'https://upload.wikimedia.org/wikipedia/commons/4/4c/En-us-water.ogg',
-            },
+            { title: 'File:En-us-water.ogg', url: 'https://upload.wikimedia.org/x/En-us-water.ogg' },
+            { title: 'File:En-uk-water.ogg', url: 'https://upload.wikimedia.org/x/En-uk-water.ogg' },
           ])
         ),
       })
@@ -145,8 +163,17 @@ test.describe('content script audio discovery', () => {
     const page = await context.newPage();
     await page.goto(WATER_URL);
 
-    await expect(page.getByTestId('wad-panel')).toBeVisible();
-    await expect(page.getByTestId('wad-preview')).toHaveCount(1);
+    const body = page.locator('.audio-panel-body');
+    const minimize = page.getByTestId('wad-minimize');
+
+    await expect(body).toBeVisible();
+    await minimize.click();
+    await expect(body).toBeHidden();
+    await expect(minimize).toHaveText('+');
+
+    await minimize.click();
+    await expect(body).toBeVisible();
+    await expect(minimize).toHaveText('−');
   });
 
   // Geometry sweep -- verifies the clamp()-based responsive sizing keeps the

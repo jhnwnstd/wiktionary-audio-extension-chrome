@@ -675,6 +675,43 @@ assert(arrayBufferToBase64(new Uint8Array([]).buffer) === '', 'empty');
 const large = new Uint8Array(100000).fill(66).buffer;
 assert(atob(arrayBufferToBase64(large)).length === 100000, 'large roundtrip');
 
+// Reads src/content-script.js as text and pulls keys out of each locale block
+// in `const i18n = { ... }`. Catches drift where a new key is added to `en`
+// but missed in fr/de/etc., which would silently fall back to undefined in
+// the UI. No eval -- pure regex extraction so the test stays safe even if
+// the source ever picked up a hostile string.
+section('i18n locale key parity');
+const fs = require('node:fs');
+const path = require('node:path');
+const contentSrc = fs.readFileSync(
+  path.join(__dirname, '../../src/content-script.js'), 'utf8');
+const i18nStart = contentSrc.indexOf('const i18n = {');
+const i18nEnd = contentSrc.indexOf('\n};', i18nStart);
+assert(i18nStart !== -1 && i18nEnd !== -1, 'i18n block located');
+const i18nBlock = contentSrc.slice(i18nStart, i18nEnd);
+
+const localeRe = /^ {2}([a-z]{2,3}):\s*\{$([\s\S]*?)^ {2}\}/gm;
+const locales = {};
+let lm;
+while ((lm = localeRe.exec(i18nBlock)) !== null) {
+  const [, code, body] = lm;
+  const keyRe = /^ {4}([A-Za-z_$][A-Za-z0-9_$]*):/gm;
+  const keys = [];
+  let km;
+  while ((km = keyRe.exec(body)) !== null) keys.push(km[1]);
+  locales[code] = keys.sort();
+}
+assert(Object.keys(locales).length >= 2, `extracted multiple locales (got ${Object.keys(locales).length})`);
+assert(locales.en && locales.en.length > 0, 'en locale extracted with keys');
+const enKeys = locales.en.join(',');
+for (const [code, keys] of Object.entries(locales)) {
+  if (code === 'en') continue;
+  assert(
+    keys.join(',') === enKeys,
+    `i18n.${code} has same keys as en (got ${keys.length}, expected ${locales.en.length})`
+  );
+}
+
 // ============ SUMMARY ============
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

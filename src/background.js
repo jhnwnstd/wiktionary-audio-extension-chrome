@@ -14,13 +14,9 @@ const logError = console.error.bind(console);
 /** @param {ArrayBuffer} arrayBuffer */
 function arrayBufferToBase64(arrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
-  // Fast path for small payloads. `String.fromCharCode(...bytes)` can throw
-  // RangeError ("Maximum call stack size exceeded") for very large spreads
-  // even below 64K on some engines, so we wrap it and fall through to the
-  // chunked loop on failure.
-  try {
-    if (bytes.length < 65536) return btoa(String.fromCharCode(...bytes));
-  } catch { /* fall through to chunked path */ }
+  // 8 KB chunks avoid `Maximum call stack size exceeded` from large spreads.
+  // No "fast path" for small inputs -- Convert output is 96 KB/sec PCM, so
+  // every real conversion exceeds that threshold anyway.
   let bin = '';
   for (let i = 0; i < bytes.length; i += 8192) {
     bin += String.fromCharCode(...bytes.subarray(i, i + 8192));

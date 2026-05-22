@@ -169,6 +169,32 @@ test.describe('download paths', { tag: '@live' }, () => {
     downloadMetrics.push({ label: 'Original click->ack', ms: Date.now() - start });
   });
 
+  // Batch flow -- clicks Download All and waits for the summary "N/N Downloaded"
+  // text. Proves the per-page subfolder + fan-out work end-to-end against real
+  // Wikimedia. Sized at 30s per item; en/water typically has 2-5 audio items.
+  test('Download All batch flow completes with all items succeeded', async () => {
+    const page = await context.newPage();
+    await page.goto('https://en.wiktionary.org/wiki/water', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30_000,
+    });
+
+    const allBtn = page.getByTestId('wad-download-all');
+    await allBtn.waitFor({ state: 'visible', timeout: 20_000 });
+
+    const itemCount = await page.getByTestId('wad-audio-item').count();
+    if (itemCount < 2) throw new Error(`expected >= 2 items for batch test, got ${itemCount}`);
+
+    const start = Date.now();
+    await allBtn.click();
+    // Success summary text from src/content-script.js downloadAll:
+    // `${okItems}/${items.length} ${t.downloaded}`. We assert N/N (full success).
+    await expect(allBtn).toContainText(new RegExp(`${itemCount}/${itemCount}`), {
+      timeout: 30_000 * itemCount,
+    });
+    downloadMetrics.push({ label: `Download All (${itemCount} items)`, ms: Date.now() - start });
+  });
+
   test('Convert mode produces WAV (full FFmpeg cold path)', async () => {
     const extensionId = await getExtensionId(context);
 

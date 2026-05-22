@@ -42,35 +42,42 @@ test.describe('popup', () => {
     await expect(page.getByTestId('wad-mode-original')).toBeChecked();
   });
 
-  test('persists Convert selection across reload', async () => {
+  // Persistence -- one test per non-default mode. Original is the default,
+  // so it doesn't need a "persists" check (the renders-default test covers it).
+  for (const mode of ['convert', 'both']) {
+    test(`persists ${mode} selection across reload`, async () => {
+      const page = await context.newPage();
+      await page.goto(`chrome-extension://${extensionId}/popup.html`);
+
+      await page.getByTestId(`wad-mode-${mode}`).check();
+
+      // Poll storage directly -- proves chrome.storage.sync.set settled before
+      // reloading. Avoids racing the async set against page.reload().
+      await expect
+        .poll(async () => page.evaluate(async () => (await chrome.storage.sync.get('mode')).mode))
+        .toBe(mode);
+
+      await page.reload();
+
+      await expect(page.getByTestId(`wad-mode-${mode}`)).toBeChecked();
+    });
+  }
+
+  // Failure path: if chrome.storage.sync.set rejects, the popup must surface
+  // the failure to the user via #status. Stubs the API to reject so we don't
+  // need to actually exhaust the sync quota.
+  test('surfaces error when storage.sync.set rejects', async () => {
     const page = await context.newPage();
     await page.goto(`chrome-extension://${extensionId}/popup.html`);
+
+    await page.evaluate(() => {
+      // @ts-ignore
+      window.chrome.storage.sync.set = () => Promise.reject(new Error('quota exceeded'));
+    });
 
     await page.getByTestId('wad-mode-convert').check();
 
-    // Poll storage directly -- proves chrome.storage.sync.set settled before
-    // reloading. Avoids racing the async set against page.reload().
-    await expect
-      .poll(async () => page.evaluate(async () => (await chrome.storage.sync.get('mode')).mode))
-      .toBe('convert');
-
-    await page.reload();
-
-    await expect(page.getByTestId('wad-mode-convert')).toBeChecked();
-  });
-
-  test('persists Both selection across reload', async () => {
-    const page = await context.newPage();
-    await page.goto(`chrome-extension://${extensionId}/popup.html`);
-
-    await page.getByTestId('wad-mode-both').check();
-    await expect
-      .poll(async () => page.evaluate(async () => (await chrome.storage.sync.get('mode')).mode))
-      .toBe('both');
-
-    await page.reload();
-
-    await expect(page.getByTestId('wad-mode-both')).toBeChecked();
+    await expect(page.locator('#status')).toContainText(/Failed to save/);
   });
 
   test('clicking anywhere in the radio-container row selects the radio', async () => {
