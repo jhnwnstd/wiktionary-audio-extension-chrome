@@ -8,7 +8,7 @@ Chrome extension for downloading Wiktionary pronunciation audio as the original 
 
 - Finds pronunciation audio across Wiktionary language editions
 - Original mode: source files such as OGG, Opus, and MP3
-- Convert mode: 16-bit WAV Linear PCM, mono, 48 kHz, TPDF-dithered
+- Convert mode: 16-bit WAV Linear PCM, 48 kHz, mono, TPDF-dithered
 - Plays a preview of each audio file before download
 - Names files with parsed metadata, for example `english_australian_water.ogg`
 
