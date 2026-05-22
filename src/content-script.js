@@ -832,8 +832,8 @@ function createUI(items) {
         ${items.map((item, i) => `
           <div data-testid="wad-audio-item" style="display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid #f6f6f6" title="${escapeHtml(item.filename)}">
             <button data-testid="wad-preview" data-preview="${i}" style="border:0;border-radius:6px;width:28px;height:28px;display:grid;place-items:center;background:#eef2f7;color:#1a73e8;cursor:pointer;flex-shrink:0" title="Preview">${PLAY_SVG}</button>
-            <div style="flex:1;word-break:break-all" data-testid="wad-audio-filename">${escapeHtml(item.displayName || item.filename)}</div>
-            <button data-testid="wad-download" data-i="${i}" style="border:0;border-radius:8px;padding:6px 12px;background:#1a73e8;color:#fff;cursor:pointer">${t.downloadButton}</button>
+            <div style="flex:1;min-width:0;line-height:1.3;overflow-wrap:anywhere" data-testid="wad-audio-filename">${escapeHtml(item.displayName || item.filename)}</div>
+            <button data-testid="wad-download" data-i="${i}" style="border:0;border-radius:8px;padding:6px 12px;background:#1a73e8;color:#fff;cursor:pointer;flex-shrink:0">${t.downloadButton}</button>
           </div>`).join('')}
       </div>
       ${items.length > 1 ? `
