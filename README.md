@@ -20,8 +20,7 @@ Install directly from this repository.
 2. Open `chrome://extensions`.
 3. Enable Developer mode.
 4. Select Load unpacked.
-5. Select the `src/` folder, not the repository root.
-6. Pin the extension if desired.
+5. Select the `src/` folder only, not the repository root.
 
 ## Usage
 
