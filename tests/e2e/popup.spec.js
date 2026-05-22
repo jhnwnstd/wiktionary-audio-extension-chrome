@@ -15,7 +15,7 @@ test.describe('popup', () => {
 
   test.beforeEach(async () => {
     context = await chromium.launchPersistentContext('', {
-      channel: 'chromium',
+      channel: process.env.PW_CHANNEL || 'chromium',
       headless: true,
       args: [
         `--disable-extensions-except=${extensionPath}`,
@@ -48,8 +48,11 @@ test.describe('popup', () => {
 
     await page.getByTestId('wad-mode-convert').check();
 
-    // Wait for status confirmation -- proves chrome.storage.sync.set completed.
-    await expect(page.locator('#status')).toContainText(/Saved/);
+    // Poll storage directly -- proves chrome.storage.sync.set settled before
+    // reloading. Avoids racing the async set against page.reload().
+    await expect
+      .poll(async () => page.evaluate(async () => (await chrome.storage.sync.get('mode')).mode))
+      .toBe('convert');
 
     await page.reload();
 
@@ -61,7 +64,9 @@ test.describe('popup', () => {
     await page.goto(`chrome-extension://${extensionId}/popup.html`);
 
     await page.getByTestId('wad-mode-both').check();
-    await expect(page.locator('#status')).toContainText(/Saved/);
+    await expect
+      .poll(async () => page.evaluate(async () => (await chrome.storage.sync.get('mode')).mode))
+      .toBe('both');
 
     await page.reload();
 

@@ -43,7 +43,7 @@ test.describe('content script audio discovery', () => {
 
   test.beforeEach(async () => {
     context = await chromium.launchPersistentContext('', {
-      channel: 'chromium',
+      channel: process.env.PW_CHANNEL || 'chromium',
       headless: true,
       args: [
         `--disable-extensions-except=${extensionPath}`,

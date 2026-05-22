@@ -56,7 +56,6 @@ async function saveSettings() {
   updateWarningVisibility();
   try {
     await chrome.storage.sync.set({ mode });
-    showStatus('Saved', 'success');
   } catch {
     showStatus('Failed to save', 'error', 3000);
   }

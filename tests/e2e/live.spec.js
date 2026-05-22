@@ -21,7 +21,7 @@ const downloadMetrics = [];
 
 async function launchContext() {
   return chromium.launchPersistentContext('', {
-    channel: 'chromium',
+    channel: process.env.PW_CHANNEL || 'chromium',
     headless: true,
     acceptDownloads: true,
     args: [
@@ -67,7 +67,8 @@ test.describe('discovery sweep', { tag: '@live' }, () => {
 
       try {
         // Successful URLs all panel-render in <8s on a warm Wikimedia connection;
-        // 15s buffer fails fast for entries with no audio (e.g., ja/水).
+        // 15s buffer fails fast if an entry turns out to have no audio (e.g.,
+        // editors removed the pronunciation file since the fixture was picked).
         await page.getByTestId('wad-panel').waitFor({ state: 'visible', timeout: 15_000 });
         panelMs = Date.now() - start;
         await page.getByTestId('wad-audio-item').first().waitFor({ state: 'visible', timeout: 5_000 });
@@ -171,11 +172,15 @@ test.describe('download paths', { tag: '@live' }, () => {
   test('Convert mode produces WAV (full FFmpeg cold path)', async () => {
     const extensionId = await getExtensionId(context);
 
-    // Flip mode to convert via the popup, confirm storage.sync.set ran.
+    // Flip mode to convert via the popup, confirm storage.sync.set persisted
+    // before navigating away. Reading the store directly avoids a race where
+    // popup.close() fires before the async set settles.
     const popup = await context.newPage();
     await popup.goto(`chrome-extension://${extensionId}/popup.html`);
     await popup.getByTestId('wad-mode-convert').check();
-    await expect(popup.locator('#status')).toContainText(/Saved/);
+    await expect
+      .poll(async () => popup.evaluate(async () => (await chrome.storage.sync.get('mode')).mode))
+      .toBe('convert');
     await popup.close();
 
     const page = await context.newPage();

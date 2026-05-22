@@ -822,7 +822,7 @@ function createUI(items) {
   ].join(';');
   panel.innerHTML = `
     <div id="audio-panel" data-testid="wad-panel" style="background:#fff;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25);width:380px;max-width:100%;max-height:100%;display:flex;flex-direction:column;overflow:hidden">
-      <div style="padding:10px 12px;border-bottom:1px solid #eee;font-weight:600;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
+      <div style="padding:10px 12px;border-bottom:1px solid #eee;font-weight:600;display:flex;justify-content:space-between;align-items:center;flex-shrink:0" title="Pronunciation audio found on this Wiktionary page by the Wiktionary Audio Downloader extension">
         <span>${t.audioFiles}</span>
         <button id="minimize-btn" data-testid="wad-minimize" style="border:0;background:none;color:#666;cursor:pointer;font-size:16px;padding:4px;border-radius:4px" title="Minimize panel">\u2212</button>
       </div>

@@ -22,17 +22,22 @@ jobs:
       - run: npm run check
 
   e2e:
-    name: E2E (${{ matrix.os }})
+    name: E2E (${{ matrix.os }} / ${{ matrix.channel }})
     needs: lint-unit
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        # Linux covers the common path; macOS catches real chrome.downloads
-        # differences. Windows is intentionally omitted -- the cross-platform
-        # filename rules are tested in plain JS in the unit suite, so a
-        # Windows e2e run wouldn't catch anything new.
+        # OS dimension: Linux covers the common path; macOS catches real
+        # chrome.downloads differences. Windows omitted -- the cross-platform
+        # filename rules are tested in plain JS in the unit suite.
+        #
+        # Channel dimension: `chromium` is Playwright's pinned Chrome for
+        # Testing (what users will see after Chrome auto-updates); `chrome`
+        # is the system-installed stable Chrome (what most users run today).
+        # Together they prove the extension works on both build flavors.
         os: [ubuntu-latest, macos-latest]
+        channel: [chromium, chrome]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -41,7 +46,9 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
-      # --with-deps installs OS-level libraries Playwright needs on Linux;
-      # it's a no-op on macOS/Windows runners that already ship them.
-      - run: npx playwright install --with-deps chromium
-      - run: npm run test:e2e
+      # --with-deps installs the browser binary AND any OS-level libraries
+      # Playwright needs on Linux. No-op on macOS/Windows for system libs.
+      - run: npx playwright install --with-deps ${{ matrix.channel }}
+      - env:
+          PW_CHANNEL: ${{ matrix.channel }}
+        run: npm run test:e2e

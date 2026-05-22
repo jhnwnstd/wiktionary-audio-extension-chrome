@@ -46,13 +46,6 @@
       color: #333;
     }
 
-    .setting-description {
-      font-size: 12px;
-      color: #666;
-      margin-bottom: 8px;
-      line-height: 1.4;
-    }
-
     .radio-container {
       display: flex;
       align-items: center;
@@ -122,13 +115,11 @@
       border: 1px solid #f5c6cb;
     }
 
-    .footer {
-      margin-top: 16px;
-      padding-top: 12px;
-      border-top: 1px solid #e0e0e0;
+    .credit {
+      margin-top: 12px;
       text-align: center;
-      font-size: 11px;
-      color: #666;
+      font-size: 10px;
+      color: #aaa;
     }
   </style>
 </head>
@@ -145,39 +136,34 @@
 
   <div class="setting-group">
     <!-- Use radiogroup semantics -->
-    <label class="setting-label" id="format-label">Audio Format</label>
-    <div class="setting-description" id="format-desc">
-      Choose how to download audio files.
-    </div>
+    <label class="setting-label" id="format-label">Download</label>
 
-    <div role="radiogroup" aria-labelledby="format-label" aria-describedby="format-desc">
+    <div role="radiogroup" aria-labelledby="format-label">
       <label class="radio-container">
         <input type="radio" name="mode" value="original" id="original" data-testid="wad-mode-original">
-        <span class="radio-label">Save original file</span>
+        <span class="radio-label">Original file</span>
       </label>
 
       <label class="radio-container">
         <input type="radio" name="mode" value="convert" id="convert" data-testid="wad-mode-convert">
-        <span class="radio-label">Save converted WAV file</span>
+        <span class="radio-label">Converted WAV file</span>
       </label>
 
       <label class="radio-container">
         <input type="radio" name="mode" value="both" id="both" data-testid="wad-mode-both">
-        <span class="radio-label">Save both</span>
+        <span class="radio-label">Both</span>
       </label>
     </div>
 
     <div class="warning" id="wav-warning">
-      16-bit PCM WAV, mono, 48 kHz. Local conversion only.
+      16-bit PCM WAV, mono, 48 kHz, with triangular dithering.
     </div>
   </div>
 
   <!-- Live region for announcements -->
   <div class="status" id="status" role="status" aria-live="polite"></div>
 
-  <div class="footer">
-    Visit any Wiktionary page to download audio files
-  </div>
+  <div class="credit">a LanguageDoodad</div>
 
   <script src="popup.js"></script>
 </body>

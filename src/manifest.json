@@ -1,8 +1,9 @@
 {
   "name": "Wiktionary Audio Downloader",
-  "description": "Download Wiktionary pronunciation audio files with optional WAV-compatible naming",
+  "description": "Download Wiktionary pronunciation audio. Save the original file or convert to WAV locally with FFmpeg.wasm.",
   "version": "1.1.0",
   "manifest_version": 3,
+  "homepage_url": "https://github.com/jhnwnstd/wiktionary-audio-extension-chrome",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
@@ -34,7 +35,10 @@
       "vendor/ffmpeg/*",
       "vendor/ffmpeg/core/*"
     ],
-    "matches": ["*://*/*"]
+    "matches": [
+      "*://*.wiktionary.org/*",
+      "https://*.wikimedia.org/*"
+    ]
   }],
   "cross_origin_embedder_policy": {
     "value": "require-corp"
