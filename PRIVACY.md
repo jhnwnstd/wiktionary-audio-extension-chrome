@@ -17,10 +17,9 @@ If you are signed in to Chrome and have sync enabled, Chrome may sync this setti
 The extension makes web requests only to:
 
 - `*.wiktionary.org`, to query the MediaWiki API and find audio files on the entry you are viewing
-- `commons.wikimedia.org`, to query file metadata from Wikimedia Commons
 - `upload.wikimedia.org`, to fetch audio files when you click Preview or Download
 
-The extension does not contact any analytics, advertising, error reporting, nor conversion server.
+The extension does not contact any analytics, advertising, error reporting, or conversion server.
 
 ## Conversion location
 
