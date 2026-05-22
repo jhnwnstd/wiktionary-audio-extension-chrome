@@ -805,14 +805,28 @@ function createUI(items) {
   if (!items.length) return;
 
   const panel = document.createElement('div');
-  panel.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483647;font:13px system-ui';
+  // Outer positioner -- viewport caps guarantee the panel always fits on
+  // screen regardless of window size. Flex column lets the inner panel
+  // shrink its scrollable body when the viewport is too short for the
+  // preferred max-height.
+  panel.style.cssText = [
+    'position:fixed',
+    'right:16px',
+    'bottom:16px',
+    'z-index:2147483647',
+    'font:13px system-ui',
+    'max-width:calc(100vw - 32px)',
+    'max-height:calc(100vh - 32px)',
+    'display:flex',
+    'flex-direction:column',
+  ].join(';');
   panel.innerHTML = `
-    <div id="audio-panel" data-testid="wad-panel" style="background:#fff;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25);min-width:280px;max-width:380px">
-      <div style="padding:10px 12px;border-bottom:1px solid #eee;font-weight:600;display:flex;justify-content:space-between;align-items:center">
+    <div id="audio-panel" data-testid="wad-panel" style="background:#fff;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25);width:380px;max-width:100%;max-height:100%;display:flex;flex-direction:column;overflow:hidden">
+      <div style="padding:10px 12px;border-bottom:1px solid #eee;font-weight:600;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
         <span>${t.audioFiles}</span>
         <button id="minimize-btn" data-testid="wad-minimize" style="border:0;background:none;color:#666;cursor:pointer;font-size:16px;padding:4px;border-radius:4px" title="Minimize panel">\u2212</button>
       </div>
-      <div class="audio-panel-body" style="max-height:350px;overflow:auto">
+      <div class="audio-panel-body" style="flex:1 1 auto;overflow:auto;max-height:500px">
         ${items.map((item, i) => `
           <div data-testid="wad-audio-item" style="display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid #f6f6f6" title="${escapeHtml(item.filename)}">
             <button data-testid="wad-preview" data-preview="${i}" style="border:0;border-radius:6px;width:28px;height:28px;display:grid;place-items:center;background:#eef2f7;color:#1a73e8;cursor:pointer;flex-shrink:0" title="Preview">${PLAY_SVG}</button>
@@ -821,7 +835,7 @@ function createUI(items) {
           </div>`).join('')}
       </div>
       ${items.length > 1 ? `
-      <div class="audio-panel-footer" style="display:flex;gap:8px;padding:10px 12px">
+      <div class="audio-panel-footer" style="display:flex;gap:8px;padding:10px 12px;flex-shrink:0">
         <button id="dl-all" data-testid="wad-download-all" style="border:0;border-radius:8px;padding:8px 12px;background:#1a73e8;color:#fff;cursor:pointer">${t.downloadAllButton}</button>
       </div>` : ''}
     </div>`;
