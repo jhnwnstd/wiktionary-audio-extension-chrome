@@ -16,7 +16,7 @@ Chrome extension for downloading Wiktionary audio as the original file or a loca
 
 Install directly from this repository.
 
-1. Clone the repository or download and unzip the latest release.
+1. Clone the repository or download and unzip the [latest release](https://github.com/jhnwnstd/wiktionary-audio-extension-chrome/releases/latest).
 2. Open `chrome://extensions`.
 3. Enable Developer mode.
 4. Select Load unpacked.
