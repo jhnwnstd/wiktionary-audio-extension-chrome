@@ -32,12 +32,13 @@ jobs:
         # chrome.downloads differences. Windows omitted -- the cross-platform
         # filename rules are tested in plain JS in the unit suite.
         #
-        # Channel dimension: `chromium` is Playwright's pinned Chrome for
-        # Testing (what users will see after Chrome auto-updates); `chrome`
-        # is the system-installed stable Chrome (what most users run today).
-        # Together they prove the extension works on both build flavors.
+        # Channel: Chrome for Testing only. It's the same Chromium engine as
+        # Chrome stable, just packaged for automation. Chrome stable in
+        # headless mode does not reliably load unpacked extensions, so it's
+        # not a useful CI target; users still get tested behavior because
+        # auto-updating Chrome converges to the same Chromium versions.
         os: [ubuntu-latest, macos-latest]
-        channel: [chromium, chrome]
+        channel: [chromium]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
