@@ -6,13 +6,11 @@ Chrome extension for downloading Wiktionary pronunciation audio as the original 
 
 ## Features
 
-- Finds pronunciation audio across all Wiktionary language editions
-- Supports Original mode for source files such as OGG, Opus, and MP3
-- Supports Convert mode for a local WAV copy, 16 bit PCM, mono, 48 kHz, with triangular dithering on bit depth reduction
+- Finds pronunciation audio across all language editions
+- Original mode: source files such as OGG, Opus, and MP3
+- Convert mode: local WAV copy, 16 bit PCM, mono, 48 kHz, with triangular dithering on bit depth reduction
 - Plays a preview of each audio file before download
 - Names files with parsed metadata, for example `english_australian_water.ogg`
-- Batch downloads land in a `Wiktionary-{edition}-{page}` subfolder of Downloads
-- Supports single-file and batch download
 
 ## Install
 
@@ -41,8 +39,6 @@ Batch downloads are grouped into a single subfolder named `Wiktionary-{edition}-
 - Host permissions allow access only to Wiktionary pages and Wikimedia audio resources
 
 ## Development
-
-The repository root contains development tooling. The extension itself lives in `src/`.
 
 ```bash
 git clone https://github.com/jhnwnstd/wiktionary-audio-extension-chrome.git
