@@ -27,6 +27,10 @@ async function launchContext() {
     args: [
       `--disable-extensions-except=${extensionPath}`,
       `--load-extension=${extensionPath}`,
+      // Chrome 137+ blocks --load-extension by default via this feature
+      // flag. Chrome for Testing (the chromium channel) doesn't enforce
+      // it, so this is a no-op there but essential for the chrome channel.
+      '--disable-features=DisableLoadExtensionCommandLineSwitch',
     ],
   });
 }
