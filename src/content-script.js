@@ -924,7 +924,18 @@ function createUI(items) {
       return (a.displayName || '').localeCompare(b.displayName || '');
     });
 
-    if (audioFiles.length) createUI(audioFiles);
+    if (audioFiles.length) {
+      createUI(audioFiles);
+      // Fire-and-forget prefetch: tell background to start pulling the audio
+      // bytes into its cache while the user reads the panel. By the time they
+      // click Download, the bytes are usually ready and both Original and
+      // Convert paths skip their network round-trip. Not awaited -- panel UX
+      // doesn't depend on prefetch finishing.
+      safeSendMessage({
+        type: 'PREFETCH_AUDIO',
+        urls: audioFiles.map(item => item.url),
+      }, { timeoutMs: 5000 }).catch(() => { /* opportunistic; ignore failures */ });
+    }
   } catch (error) {
     logError('[Wiktionary Audio] Discovery failed:', error);
   }

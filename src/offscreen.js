@@ -106,9 +106,9 @@ chrome.runtime.onConnect.addListener(port => {
       return;
     }
 
-    const { srcUrl, outBase } = msg;
-    if (!srcUrl) {
-      port.postMessage({ ok: false, error: 'No audio URL provided' });
+    const { srcUrl, srcBytes, outBase } = msg;
+    if (!srcUrl && !Array.isArray(srcBytes)) {
+      port.postMessage({ ok: false, error: 'No audio source provided' });
       return;
     }
 
@@ -116,17 +116,21 @@ chrome.runtime.onConnect.addListener(port => {
     const outName = (outBase || 'audio') + '.wav';
 
     try {
-      // Fetch audio and load FFmpeg concurrently -- they're independent and
-      // both take a couple hundred milliseconds on a cold convert, so running
-      // them in parallel cuts the smaller wait off the critical path.
-      log('[Offscreen] Fetching:', srcUrl.substring(0, 60));
-      const fetchBytes = (async () => {
-        const response = await fetch(srcUrl);
-        if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
-        const bytes = new Uint8Array(await response.arrayBuffer());
-        if (!bytes.length) throw new Error('Empty audio data');
-        return bytes;
-      })();
+      // Two paths:
+      //   * srcBytes -- background's prefetch cache already has the bytes;
+      //     skip the fetch entirely. Convert into Uint8Array up front; load
+      //     FFmpeg in parallel.
+      //   * srcUrl   -- no cached bytes; fetch concurrently with FFmpeg load.
+      const fetchBytes = srcBytes
+        ? Promise.resolve(new Uint8Array(srcBytes))
+        : (async () => {
+            log('[Offscreen] Fetching:', srcUrl.substring(0, 60));
+            const response = await fetch(srcUrl);
+            if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
+            const bytes = new Uint8Array(await response.arrayBuffer());
+            if (!bytes.length) throw new Error('Empty audio data');
+            return bytes;
+          })();
 
       const [audioBytes] = await Promise.all([fetchBytes, loadFFmpeg()]);
       await ffmpeg.writeFile(inName, audioBytes);

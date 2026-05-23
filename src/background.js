@@ -143,12 +143,14 @@ async function ensureOffscreen() {
 }
 
 /**
- * Send a TRANSCODE request to the offscreen FFmpeg worker.
- * @param {string} audioUrl
+ * Send a TRANSCODE request to the offscreen FFmpeg worker. Accepts either a
+ * URL (offscreen fetches) or an ArrayBuffer of pre-fetched bytes (offscreen
+ * skips the fetch -- used when the prefetch cache has the bytes ready).
+ * @param {string | ArrayBuffer} src
  * @param {string} baseName - filename without extension; offscreen appends `.wav`
  * @returns {Promise<{ filename: string, arrayBuffer: ArrayBuffer }>}
  */
-async function transcodeToWav(audioUrl, baseName) {
+async function transcodeToWav(src, baseName) {
   log('[Background] Starting transcode...');
   await ensureOffscreen();
 
@@ -177,8 +179,89 @@ async function transcodeToWav(audioUrl, baseName) {
       resolve({ filename: msg.filename, arrayBuffer });
     });
 
-    port.postMessage({ type: 'TRANSCODE', srcUrl: audioUrl, outBase: baseName });
+    const payload = src instanceof ArrayBuffer
+      ? { type: 'TRANSCODE', srcBytes: Array.from(new Uint8Array(src)), outBase: baseName }
+      : { type: 'TRANSCODE', srcUrl: src, outBase: baseName };
+    port.postMessage(payload);
   });
+}
+
+// ============== AUDIO PREFETCH CACHE ==============
+//
+// Once the content script discovers audio on a Wiktionary page it sends the
+// URLs here for proactive fetching. We hold the ArrayBuffers in memory so the
+// eventual download skips the network round-trip on both Original and Convert
+// paths. Bounded by total bytes; LRU-evicted; lost on SW restart (acceptable
+// -- next click just refetches via the existing URL path).
+
+const PREFETCH_CACHE_MAX_BYTES = 20 * 1024 * 1024; // 20 MB
+const PREFETCH_CONCURRENCY = 3;
+
+/** @type {Map<string, { bytes: ArrayBuffer, lastUsedMs: number }>} */
+const audioCache = new Map();
+let audioCacheBytes = 0;
+
+/**
+ * Look up a cached entry and bump its lastUsed timestamp. Returns the bytes
+ * or null. Touching on read gives us LRU eviction without a separate access
+ * counter.
+ * @param {string} url
+ * @returns {ArrayBuffer | null}
+ */
+function takeCached(url) {
+  const entry = audioCache.get(url);
+  if (!entry) return null;
+  entry.lastUsedMs = Date.now();
+  return entry.bytes;
+}
+
+/**
+ * Add bytes to the cache, evicting oldest entries until we fit under the cap.
+ * Skips URLs already present and entries that wouldn't fit even alone.
+ * @param {string} url
+ * @param {ArrayBuffer} bytes
+ */
+function addToCache(url, bytes) {
+  if (audioCache.has(url)) return;
+  if (bytes.byteLength > PREFETCH_CACHE_MAX_BYTES) return; // pathological single file
+  while (audioCacheBytes + bytes.byteLength > PREFETCH_CACHE_MAX_BYTES && audioCache.size > 0) {
+    let oldestUrl = null;
+    let oldestTs = Infinity;
+    for (const [u, e] of audioCache) {
+      if (e.lastUsedMs < oldestTs) { oldestUrl = u; oldestTs = e.lastUsedMs; }
+    }
+    if (!oldestUrl) break;
+    audioCacheBytes -= audioCache.get(oldestUrl).bytes.byteLength;
+    audioCache.delete(oldestUrl);
+  }
+  audioCache.set(url, { bytes, lastUsedMs: Date.now() });
+  audioCacheBytes += bytes.byteLength;
+}
+
+/**
+ * Fetch a batch of URLs with bounded concurrency and stash results in the
+ * cache. Best-effort: per-URL failures are swallowed so one bad URL doesn't
+ * starve the others. Skips URLs already cached.
+ * @param {string[]} urls
+ */
+async function prefetchAudioUrls(urls) {
+  const todo = urls.filter(u => typeof u === 'string' && !audioCache.has(u));
+  if (!todo.length) return;
+  const queue = todo.slice();
+  const workers = Array.from({ length: PREFETCH_CONCURRENCY }, async () => {
+    while (queue.length) {
+      const url = queue.shift();
+      if (!url) continue;
+      try {
+        const r = await fetch(url, { credentials: 'omit' });
+        if (!r.ok) continue;
+        const bytes = await r.arrayBuffer();
+        if (bytes.byteLength) addToCache(url, bytes);
+      } catch { /* best-effort -- one URL failing shouldn't block the others */ }
+    }
+  });
+  await Promise.allSettled(workers);
+  log(`[Background] Prefetch done. Cache: ${audioCache.size} items, ${(audioCacheBytes / 1024).toFixed(0)} KB`);
 }
 
 // Prepend an optional subfolder to a sanitized filename. Folder and file are
@@ -203,21 +286,43 @@ chrome.runtime.onMessage.addListener(
    * @param {(response: DownloadResponse) => void} sendResponse
    */
   (msg, _sender, sendResponse) => {
+  // Fire-and-forget prefetch. Respond immediately so the content script
+  // doesn't await network work that's meant to be opportunistic.
+  if (msg?.type === 'PREFETCH_AUDIO') {
+    prefetchAudioUrls(Array.isArray(msg.urls) ? msg.urls : []);
+    sendResponse({ ok: true });
+    return false;
+  }
+
   if (msg?.type !== 'DOWNLOAD_AUDIO') return false;
 
   const { url, originalFilename, mode, folder } = msg;
   const baseName = sanitizeFilename(originalFilename.replace(/\.[^.]+$/, ''));
 
   (async () => {
+    const cached = takeCached(url);
     if (mode === 'convert') {
-      log('[Background] Converting:', originalFilename, folder ? `-> ${folder}/` : '');
-      const { filename, arrayBuffer } = await transcodeToWav(url, baseName);
+      log('[Background] Converting:', originalFilename, folder ? `-> ${folder}/` : '', cached ? '(cached)' : '');
+      // Pass cached bytes when we have them so offscreen skips its own fetch.
+      const { filename, arrayBuffer } = await transcodeToWav(cached || url, baseName);
       const base64 = arrayBufferToBase64(arrayBuffer);
       const dataUrl = `data:audio/wav;base64,${base64}`;
       await chrome.downloads.download({
         url: dataUrl,
         filename: pathWithFolder(folder, filename),
         saveAs: false
+      });
+    } else if (cached) {
+      // Original mode with cached bytes: skip the chrome.downloads URL fetch
+      // by handing it a data URL built from the bytes we already have.
+      // application/octet-stream is fine; the saved file's extension comes
+      // from `filename`, not the data URL's MIME.
+      log('[Background] Downloading original (cached):', originalFilename, folder ? `-> ${folder}/` : '');
+      const base64 = arrayBufferToBase64(cached);
+      const dataUrl = `data:application/octet-stream;base64,${base64}`;
+      await chrome.downloads.download({
+        url: dataUrl,
+        filename: pathWithFolder(folder, originalFilename)
       });
     } else {
       log('[Background] Downloading original:', originalFilename, folder ? `-> ${folder}/` : '');
@@ -233,6 +338,16 @@ chrome.runtime.onMessage.addListener(
   });
 
   return true; // Keep channel open for async response
+});
+
+// Read-only introspection of the prefetch cache, exposed for tests. Lets a
+// Playwright spec deterministically wait for prefetch to finish without
+// resorting to fixed timeouts. Side-effect free; safe to keep in production.
+/** @returns {{ cachedCount: number, cachedUrls: string[], totalBytes: number }} */
+globalThis._wadInspectAudioCache = () => ({
+  cachedCount: audioCache.size,
+  cachedUrls: Array.from(audioCache.keys()),
+  totalBytes: audioCacheBytes,
 });
 
 })();

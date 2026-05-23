@@ -45,6 +45,7 @@ test.describe('content script audio discovery', () => {
     context = await chromium.launchPersistentContext('', {
       channel: process.env.PW_CHANNEL || 'chromium',
       headless: true,
+      acceptDownloads: true,
       args: [
         `--disable-extensions-except=${extensionPath}`,
         `--load-extension=${extensionPath}`,
@@ -174,6 +175,71 @@ test.describe('content script audio discovery', () => {
     await minimize.click();
     await expect(body).toBeVisible();
     await expect(minimize).toHaveText('−');
+  });
+
+  // Regression test for the prefetch cache wiring (background.js audioCache).
+  // The cache is silent in failure: if the wiring breaks, downloads still work
+  // via the URL fallback path and the existing UI tests pass. This test pins
+  // the cache HIT behavior so a regression is caught explicitly.
+  //
+  // Setup:
+  //   * Mock the audio URL with a counter-instrumented route.
+  //   * Wait until background.js has the URL in its cache (via the
+  //     globalThis._wadInspectAudioCache introspection hook).
+  //   * Click Download.
+  //   * Assert the click did NOT trigger a second network fetch -- proving
+  //     the cached-bytes path was taken (Original mode uses a data: URL when
+  //     bytes are cached, which doesn't hit the network).
+  test('Original download uses prefetched cache (no second network fetch)', async () => {
+    const AUDIO_URL = 'https://upload.wikimedia.org/x/En-us-water.ogg';
+    // OggS magic + a few padding bytes -- chrome.downloads doesn't validate
+    // the file contents, it just needs non-empty bytes to save.
+    const FAKE_OGG = Buffer.from([
+      0x4f, 0x67, 0x67, 0x53, 0x00, 0x02, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]);
+
+    let audioFetchCount = 0;
+    await context.route(AUDIO_URL, async (route) => {
+      audioFetchCount++;
+      await route.fulfill({ status: 200, contentType: 'audio/ogg', body: FAKE_OGG });
+    });
+
+    await context.route('**/w/api.php**', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(actionApiResponse([{ title: 'File:En-us-water.ogg', url: AUDIO_URL }])),
+      })
+    );
+
+    const page = await context.newPage();
+    await page.goto(WATER_URL);
+    await expect(page.getByTestId('wad-panel')).toBeVisible();
+
+    // Wait for background.js to finish prefetching this URL. SW evaluate
+    // reads the introspection hook directly; no message round-trip needed.
+    let [serviceWorker] = context.serviceWorkers();
+    if (!serviceWorker) serviceWorker = await context.waitForEvent('serviceworker');
+    await expect
+      .poll(async () => serviceWorker.evaluate(
+        (url) => globalThis._wadInspectAudioCache().cachedUrls.includes(url),
+        AUDIO_URL,
+      ))
+      .toBe(true);
+
+    // Sanity: prefetch did exactly one fetch.
+    expect(audioFetchCount).toBe(1);
+
+    // Click Download. With the cache populated, background uses a data: URL
+    // built from the cached bytes -- no second network fetch should occur.
+    const downloadBtn = page.getByTestId('wad-download').first();
+    await downloadBtn.click();
+    await expect(downloadBtn).toContainText(/Downloaded/, { timeout: 15_000 });
+
+    // The assertion that earns the test: the click triggered zero new fetches.
+    // A regression that bypasses the cache would bump this to 2.
+    expect(audioFetchCount).toBe(1);
   });
 
   // Geometry sweep -- verifies the clamp()-based responsive sizing keeps the
