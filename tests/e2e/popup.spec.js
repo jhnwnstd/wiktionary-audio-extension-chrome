@@ -42,7 +42,7 @@ test.describe('popup', () => {
     await expect(page.getByTestId('wad-mode-original')).toBeChecked();
   });
 
-  // Persistence -- one test per non-default mode. Original is the default,
+  // Persistence: one test per non-default mode. Original is the default,
   // so it doesn't need a "persists" check (the renders-default test covers it).
   for (const mode of ['convert', 'both']) {
     test(`persists ${mode} selection across reload`, async () => {
@@ -51,7 +51,7 @@ test.describe('popup', () => {
 
       await page.getByTestId(`wad-mode-${mode}`).check();
 
-      // Poll storage directly -- proves chrome.storage.sync.set settled before
+      // Poll storage directly to prove chrome.storage.sync.set settled before
       // reloading. Avoids racing the async set against page.reload().
       await expect
         .poll(async () => page.evaluate(async () => (await chrome.storage.sync.get('mode')).mode))
@@ -84,7 +84,7 @@ test.describe('popup', () => {
     const page = await context.newPage();
     await page.goto(`chrome-extension://${extensionId}/popup.html`);
 
-    // Click on the text span (not the radio dot) -- this verifies the whole
+    // Click on the text span (not the radio dot). This verifies the whole
     // <label class="radio-container"> is the click target, which is the fix
     // for the "had to click twice" UX bug.
     await page.getByTestId('wad-mode-convert').locator('..').locator('span.radio-label').click();
@@ -108,7 +108,7 @@ test.describe('popup', () => {
     let [serviceWorker] = context.serviceWorkers();
     if (!serviceWorker) serviceWorker = await context.waitForEvent('serviceworker');
 
-    // Open the popup fresh -- this is the "user clicks toolbar icon" event.
+    // Open the popup fresh. This is the "user clicks toolbar icon" event.
     // popup.js fires POPUP_OPENED on load; background reads mode (convert)
     // and pre-warms FFmpeg, which creates the offscreen document.
     const page = await context.newPage();
