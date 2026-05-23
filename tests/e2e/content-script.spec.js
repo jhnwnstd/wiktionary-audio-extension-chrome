@@ -242,6 +242,49 @@ test.describe('content script audio discovery', () => {
     expect(audioFetchCount).toBe(1);
   });
 
+  // Regression: minimize >2s -> background evicts cached bytes and aborts
+  // in-flight prefetch. Re-opening after dismissal triggers a fresh prefetch.
+  // This pins the "user signaled disengagement" cleanup path.
+  test('minimize >2s evicts the prefetch cache; reopening re-prefetches', async () => {
+    const AUDIO_URL = 'https://upload.wikimedia.org/x/En-us-water.ogg';
+    const FAKE_OGG = Buffer.from([0x4f, 0x67, 0x67, 0x53, 0x00, 0x02, 0x00, 0x00]);
+    await context.route(AUDIO_URL, async (route) => {
+      await route.fulfill({ status: 200, contentType: 'audio/ogg', body: FAKE_OGG });
+    });
+    await context.route('**/w/api.php**', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(actionApiResponse([{ title: 'File:En-us-water.ogg', url: AUDIO_URL }])),
+      })
+    );
+
+    const page = await context.newPage();
+    await page.goto(WATER_URL);
+    await expect(page.getByTestId('wad-panel')).toBeVisible();
+
+    let [sw] = context.serviceWorkers();
+    if (!sw) sw = await context.waitForEvent('serviceworker');
+    const cacheHasUrl = () => sw.evaluate(
+      (url) => globalThis._wadInspectAudioCache().cachedUrls.includes(url),
+      AUDIO_URL,
+    );
+
+    // Wait for initial prefetch to populate the cache.
+    await expect.poll(cacheHasUrl).toBe(true);
+
+    // Click minimize. The 2s dismiss timer is now armed.
+    await page.getByTestId('wad-minimize').click();
+
+    // Poll until the cache empties. The dismiss message fires at ~2s; poll
+    // a few seconds past that to give it room.
+    await expect.poll(cacheHasUrl, { timeout: 5000 }).toBe(false);
+
+    // Click minimize again to restore the panel. Should re-fire PREFETCH_AUDIO.
+    await page.getByTestId('wad-minimize').click();
+    await expect.poll(cacheHasUrl, { timeout: 5000 }).toBe(true);
+  });
+
   // Geometry sweep -- verifies the clamp()-based responsive sizing keeps the
   // panel inside the viewport on the screen sizes from the test matrix. Uses
   // 20 mocked items so the body fills past its height cap and the assertions

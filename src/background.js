@@ -143,6 +143,34 @@ async function ensureOffscreen() {
 }
 
 /**
+ * Speculative pre-warm: spin up the offscreen document and have it load the
+ * FFmpeg wasm core without converting anything. Used when the user opens the
+ * popup with Convert/Both selected -- they're about to download and we have
+ * ~2-5 seconds of popup-reading time to absorb the ~350-650 ms cold start.
+ * Fire-and-forget from callers; failures are swallowed because the user will
+ * just pay the load on their first real click.
+ */
+async function prewarmFFmpeg() {
+  log('[Background] Pre-warming FFmpeg...');
+  await ensureOffscreen();
+  return new Promise((resolve) => {
+    const port = chrome.runtime.connect({ name: 'ffmpeg' });
+    const timer = setTimeout(() => {
+      port.disconnect();
+      resolve();
+    }, 30000);
+    port.onMessage.addListener(/** @param {any} m */ (m) => {
+      if (m.type === 'PREWARMED') {
+        clearTimeout(timer);
+        port.disconnect();
+        resolve();
+      }
+    });
+    port.postMessage({ type: 'PREWARM' });
+  });
+}
+
+/**
  * Send a TRANSCODE request to the offscreen FFmpeg worker. Accepts either a
  * URL (offscreen fetches) or an ArrayBuffer of pre-fetched bytes (offscreen
  * skips the fetch -- used when the prefetch cache has the bytes ready).
@@ -201,6 +229,12 @@ const PREFETCH_CONCURRENCY = 3;
 const audioCache = new Map();
 let audioCacheBytes = 0;
 
+// In-flight prefetch AbortControllers, keyed by URL. Lets PANEL_DISMISSED
+// abort an in-progress fetch instead of letting it run to completion and
+// re-populate the cache we just tried to evict.
+/** @type {Map<string, AbortController>} */
+const inflightPrefetches = new Map();
+
 /**
  * Look up a cached entry and bump its lastUsed timestamp. Returns the bytes
  * or null. Touching on read gives us LRU eviction without a separate access
@@ -252,16 +286,40 @@ async function prefetchAudioUrls(urls) {
     while (queue.length) {
       const url = queue.shift();
       if (!url) continue;
+      const controller = new AbortController();
+      inflightPrefetches.set(url, controller);
       try {
-        const r = await fetch(url, { credentials: 'omit' });
+        const r = await fetch(url, { credentials: 'omit', signal: controller.signal });
         if (!r.ok) continue;
         const bytes = await r.arrayBuffer();
         if (bytes.byteLength) addToCache(url, bytes);
-      } catch { /* best-effort -- one URL failing shouldn't block the others */ }
+      } catch { /* best-effort -- one URL failing (or AbortError) shouldn't block others */ }
+      finally {
+        inflightPrefetches.delete(url);
+      }
     }
   });
   await Promise.allSettled(workers);
   log(`[Background] Prefetch done. Cache: ${audioCache.size} items, ${(audioCacheBytes / 1024).toFixed(0)} KB`);
+}
+
+/**
+ * Evict the given URLs from the cache and abort any in-flight prefetches
+ * for them. Called when the user dismisses the panel: a strong signal that
+ * they aren't going to download from this page, so holding the bytes is
+ * wasted RAM and any pending network work is wasted bandwidth.
+ * @param {string[]} urls
+ */
+function dismissUrls(urls) {
+  for (const url of urls) {
+    const ctrl = inflightPrefetches.get(url);
+    if (ctrl) ctrl.abort();
+    const entry = audioCache.get(url);
+    if (entry) {
+      audioCacheBytes -= entry.bytes.byteLength;
+      audioCache.delete(url);
+    }
+  }
 }
 
 // Prepend an optional subfolder to a sanitized filename. Folder and file are
@@ -290,6 +348,31 @@ chrome.runtime.onMessage.addListener(
   // doesn't await network work that's meant to be opportunistic.
   if (msg?.type === 'PREFETCH_AUDIO') {
     prefetchAudioUrls(Array.isArray(msg.urls) ? msg.urls : []);
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  // User dismissed the panel: clear the bytes we were holding for them and
+  // cancel any in-flight prefetch. If they re-open later, the content
+  // script will send PREFETCH_AUDIO again.
+  if (msg?.type === 'PANEL_DISMISSED') {
+    dismissUrls(Array.isArray(msg.urls) ? msg.urls : []);
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  // User opened the popup (or changed mode). Strong "download imminent"
+  // signal -- pre-warm FFmpeg in the background if mode requires it, so
+  // the next Convert click skips the cold load entirely.
+  if (msg?.type === 'POPUP_OPENED') {
+    (async () => {
+      try {
+        const { mode = 'original' } = await chrome.storage.sync.get({ mode: 'original' });
+        if (mode === 'convert' || mode === 'both') {
+          prewarmFFmpeg().catch(() => { /* opportunistic */ });
+        }
+      } catch { /* opportunistic */ }
+    })();
     sendResponse({ ok: true });
     return false;
   }

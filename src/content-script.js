@@ -872,11 +872,18 @@ function createUI(items) {
   const batchBtn = /** @type {HTMLButtonElement | null} */ (panel.querySelector('#dl-all'));
   if (batchBtn) batchBtn.onclick = () => downloadAll(items, batchBtn);
 
-  // Minimize/restore -- pauses any active preview when collapsing.
+  // Minimize/restore -- pauses any active preview when collapsing. Also
+  // gates prefetch lifecycle: minimizing for >2s tells the background to
+  // evict this page's bytes (user has signaled they won't use the panel);
+  // re-opening after that triggers a fresh prefetch.
   const minimizeBtn = /** @type {HTMLButtonElement} */ (panel.querySelector('#minimize-btn'));
   const body = /** @type {HTMLElement | null} */ (panel.querySelector('.audio-panel-body'));
   const footer = /** @type {HTMLElement | null} */ (panel.querySelector('.audio-panel-footer'));
   let minimized = false;
+  const itemUrls = items.map(i => i.url);
+  /** @type {number | null} */
+  let dismissTimer = null;
+  let dismissed = false;
 
   minimizeBtn.onclick = () => {
     minimized = !minimized;
@@ -885,6 +892,30 @@ function createUI(items) {
     if (footer) footer.style.display = minimized ? 'none' : 'flex';
     minimizeBtn.textContent = minimized ? '+' : '\u2212';
     minimizeBtn.title = minimized ? 'Expand panel' : 'Minimize panel';
+
+    if (minimized) {
+      // Arm the dismiss timer. If the panel stays minimized past 2s, treat
+      // the user's intent as "not using the extension on this page" -- ask
+      // background to evict the bytes and abort in-flight prefetch.
+      dismissTimer = /** @type {any} */ (setTimeout(() => {
+        dismissTimer = null;
+        dismissed = true;
+        safeSendMessage({ type: 'PANEL_DISMISSED', urls: itemUrls }, { timeoutMs: 5000 })
+          .catch(() => { /* opportunistic */ });
+      }, 2000));
+    } else {
+      if (dismissTimer !== null) {
+        clearTimeout(dismissTimer);
+        dismissTimer = null;
+      }
+      if (dismissed) {
+        // Cache was evicted while panel was minimized. Re-engage: ask
+        // background to prefetch again so the next click is still fast.
+        dismissed = false;
+        safeSendMessage({ type: 'PREFETCH_AUDIO', urls: itemUrls }, { timeoutMs: 5000 })
+          .catch(() => { /* opportunistic */ });
+      }
+    }
   };
   minimizeBtn.onmouseover = () => { minimizeBtn.style.background = '#f0f1f3'; };
   minimizeBtn.onmouseout = () => { minimizeBtn.style.background = 'none'; };

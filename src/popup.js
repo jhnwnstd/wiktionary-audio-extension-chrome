@@ -56,10 +56,24 @@ async function saveSettings() {
   updateWarningVisibility();
   try {
     await chrome.storage.sync.set({ mode });
+    // Switching INTO Convert/Both is itself a strong "download imminent"
+    // signal -- tell background so it can pre-warm FFmpeg now if needed,
+    // not wait for the next page load.
+    notifyPopupOpened();
   } catch {
     showStatus('Failed to save', 'error', 3000);
   }
 }
 
+// Tell background the popup is active. Opening the toolbar icon is the
+// single strongest signal we get that the user is about to download.
+// Fire-and-forget; the popup doesn't block on the response.
+function notifyPopupOpened() {
+  try {
+    chrome.runtime.sendMessage({ type: 'POPUP_OPENED' });
+  } catch { /* opportunistic */ }
+}
+
 radios.forEach(r => r.addEventListener('change', saveSettings));
 loadSettings();
+notifyPopupOpened();

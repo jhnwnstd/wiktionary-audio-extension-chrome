@@ -101,6 +101,17 @@ chrome.runtime.onConnect.addListener(port => {
       return;
     }
 
+    if (msg?.type === 'PREWARM') {
+      // Trigger FFmpeg.load() without converting anything. Caller resolves
+      // when PREWARMED arrives (or times out). Failures are swallowed --
+      // the user will pay the load on first real click if pre-warm failed.
+      loadFFmpeg().then(
+        () => port.postMessage({ type: 'PREWARMED', ok: true }),
+        () => port.postMessage({ type: 'PREWARMED', ok: false }),
+      );
+      return;
+    }
+
     if (msg?.type !== 'TRANSCODE') {
       port.postMessage({ ok: false, error: 'Unknown message type' });
       return;
