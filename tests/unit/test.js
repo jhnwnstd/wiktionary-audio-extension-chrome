@@ -10,26 +10,31 @@ function section(name) { console.log(name); }
 
 // ============ Replicate extension logic for testing ============
 
+// Mirrored from src/content-script.js -- keep in sync.
 const AUDIO_MIMES = new Set([
   'application/ogg',
-  'audio/mpeg', 'audio/mp3', 'audio/ogg', 'audio/wav', 'audio/wave',
-  'audio/webm', 'audio/mp4', 'audio/aac', 'audio/flac', 'audio/opus',
-  'video/ogg', 'video/webm'
 ]);
-const AUDIO_EXT_RE = /\.(ogg|oga|opus|mp3|wav|webm|m4a|aac|flac)$/i;
+const AUDIO_EXT_RE = /\.(ogg|oga|opus|mp3|wav|flac|m4a|aac)$/i;
 
 function isAudioFile(filename, mimeType) {
-  if (mimeType && AUDIO_MIMES.has(mimeType.toLowerCase())) return true;
+  if (mimeType) {
+    const m = mimeType.toLowerCase();
+    if (m.startsWith('audio/')) return true;
+    if (AUDIO_MIMES.has(m)) return true;
+  }
   return typeof filename === 'string' && AUDIO_EXT_RE.test(filename);
 }
 
 // Mirrored from src/content-script.js -- keep in sync.
 function isAudioInfo(info) {
   if (!info) return false;
-  if (typeof info.mediatype === 'string' && info.mediatype.toUpperCase() === 'AUDIO') return true;
+  if (typeof info.mediatype === 'string' && info.mediatype.length > 0) {
+    return info.mediatype.toUpperCase() === 'AUDIO';
+  }
   if (typeof info.mime === 'string') {
-    if (info.mime.startsWith('audio/')) return true;
-    if (AUDIO_MIMES.has(info.mime.toLowerCase())) return true;
+    const m = info.mime.toLowerCase();
+    if (m.startsWith('audio/')) return true;
+    if (AUDIO_MIMES.has(m)) return true;
   }
   if (typeof info.url === 'string' && AUDIO_EXT_RE.test(info.url)) return true;
   return false;
@@ -285,19 +290,31 @@ assert(isAudioFile('t.ogg', 'application/ogg'), 'application/ogg (Wiktionary act
 assert(isAudioFile('t.mp3', 'audio/mpeg'), 'audio/mpeg');
 assert(isAudioFile('t.wav', 'audio/wav'), 'audio/wav');
 assert(isAudioFile('t.opus', 'audio/opus'), 'audio/opus');
-assert(isAudioFile('t.ogg', 'video/ogg'), 'video/ogg');
+assert(isAudioFile('t.ogg', 'video/ogg'), '.ogg extension wins even if MIME claims video/ogg');
 assert(isAudioFile('t.ogg', null), '.ogg fallback');
 assert(isAudioFile('t.opus', undefined), '.opus fallback');
 assert(isAudioFile('t.mp3'), '.mp3 no mime arg');
 assert(isAudioFile('t.flac'), '.flac');
 assert(isAudioFile('t.oga'), '.oga');
-assert(isAudioFile('t.m4a'), '.m4a');
-assert(isAudioFile('t.webm'), '.webm');
+// Whitelist tightened to extensions that are unambiguously audio by format
+// or convention. .m4a and .aac are audio-only by definition; .webm stays
+// out because the WebM container can carry video.
+assert(isAudioFile('t.m4a'), '.m4a (audio-only MP4 variant)');
+assert(isAudioFile('t.aac'), '.aac (raw AAC stream)');
+assert(!isAudioFile('t.webm'), 'reject .webm (could be video container)');
 assert(!isAudioFile('t.jpg', 'image/jpeg'), 'reject jpg');
 assert(!isAudioFile(null, null), 'reject null');
 assert(!isAudioFile(undefined), 'reject undefined');
 assert(!isAudioFile('', ''), 'reject empty');
 assert(!isAudioFile(123), 'reject non-string');
+// Authoritative mediatype: VIDEO is a hard reject regardless of MIME or
+// extension. This is the new behavior that catches video files which
+// happen to land on an audio-looking extension.
+assert(!isAudioInfo({ mediatype: 'VIDEO', url: 'x.ogg' }), 'mediatype=VIDEO overrides .ogg extension');
+assert(!isAudioInfo({ mediatype: 'VIDEO', mime: 'audio/ogg', url: 'x.ogg' }), 'mediatype=VIDEO overrides audio MIME');
+assert(!isAudioInfo({ mediatype: 'BITMAP', url: 'x.jpg' }), 'mediatype=BITMAP is rejected');
+assert(isAudioInfo({ mediatype: 'AUDIO', url: 'x.ogg' }), 'mediatype=AUDIO accepted');
+assert(isAudioInfo({ mediatype: '', url: 'x.ogg' }), 'empty mediatype falls through to URL match');
 
 section('Parse Action API responses (formatversion=2 array form)');
 const oggPages = [

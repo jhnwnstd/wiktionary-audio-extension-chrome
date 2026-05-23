@@ -521,20 +521,35 @@ function escapeHtml(s) {
 const pageTitle = decodeURIComponent(location.pathname.split('/wiki/')[1] ?? '');
 const apiEndpoint = `${location.origin}/w/api.php`;
 
+// Non-audio-prefix MIMEs that should still be treated as audio. The broad
+// `audio/*` check below already covers all audio MIMEs; this set only holds
+// the few that don't start with `audio/` (Wiktionary serves .ogg files with
+// `application/ogg`, not `audio/ogg`).
 const AUDIO_MIMES = new Set([
   'application/ogg',
-  'audio/mpeg', 'audio/mp3', 'audio/ogg', 'audio/wav', 'audio/wave',
-  'audio/webm', 'audio/mp4', 'audio/aac', 'audio/flac', 'audio/opus',
-  'video/ogg', 'video/webm',
 ]);
-const AUDIO_EXT_RE = /\.(ogg|oga|opus|mp3|wav|webm|m4a|aac|flac)$/i;
+
+// Extensions that are unambiguously audio by file format or convention.
+// `.m4a` is the audio-only naming variant of MPEG-4 Part 14; `.aac` is a
+// raw AAC stream (no container = no video). `.webm` is excluded because
+// the WebM container can carry video and Wiktionary doesn't serve audio
+// in WebM -- a mislabeled .webm slipping through here would risk treating
+// a video file as audio.
+const AUDIO_EXT_RE = /\.(ogg|oga|opus|mp3|wav|flac|m4a|aac)$/i;
 
 function isAudioInfo(info) {
   if (!info) return false;
-  if (typeof info.mediatype === 'string' && info.mediatype.toUpperCase() === 'AUDIO') return true;
+  // Authoritative: if Wikimedia tagged this with a non-empty mediatype,
+  // trust it. Any non-AUDIO value (VIDEO, BITMAP, DRAWING, ...) is a hard
+  // reject -- this is the strongest signal we have and it stops video
+  // files from slipping through on extension-only matches below.
+  if (typeof info.mediatype === 'string' && info.mediatype.length > 0) {
+    return info.mediatype.toUpperCase() === 'AUDIO';
+  }
   if (typeof info.mime === 'string') {
-    if (info.mime.startsWith('audio/')) return true;
-    if (AUDIO_MIMES.has(info.mime.toLowerCase())) return true;
+    const m = info.mime.toLowerCase();
+    if (m.startsWith('audio/')) return true;
+    if (AUDIO_MIMES.has(m)) return true;
   }
   if (typeof info.url === 'string' && AUDIO_EXT_RE.test(info.url)) return true;
   return false;

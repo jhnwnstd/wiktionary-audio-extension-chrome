@@ -93,8 +93,11 @@ test.describe('content script audio discovery', () => {
     await expect(page.getByTestId('wad-audio-filename').nth(1)).toHaveText("English British 'water' .ogg");
   });
 
-  test('filters out non-audio files using mediatype', async () => {
-    // Mix audio + image pages -- only the audio one should survive the filter.
+  test('filters out non-audio files using mediatype (BITMAP, VIDEO)', async () => {
+    // Mix audio + image + video pages. Only the audio one should survive.
+    // The video case is critical: a .ogg URL that's actually video must be
+    // rejected on the mediatype signal, since the URL extension alone would
+    // otherwise match the AUDIO_EXT_RE whitelist.
     await context.route('**/w/api.php**', (route) =>
       route.fulfill({
         status: 200,
@@ -109,6 +112,18 @@ test.describe('content script audio discovery', () => {
               },
               {
                 pageid: 2,
+                title: 'File:Water-flowing.ogv',
+                imageinfo: [{ url: 'https://upload.wikimedia.org/x/Water-flowing.ogv', mime: 'video/ogg', mediatype: 'VIDEO' }],
+              },
+              {
+                pageid: 3,
+                title: 'File:Water-but-actually-video.ogg',
+                // Pathological case: extension says .ogg but mediatype says
+                // it's video. The new strict-mediatype path must reject it.
+                imageinfo: [{ url: 'https://upload.wikimedia.org/x/Water-but-actually-video.ogg', mime: 'video/ogg', mediatype: 'VIDEO' }],
+              },
+              {
+                pageid: 4,
                 title: 'File:En-us-water.ogg',
                 imageinfo: [{ url: 'https://upload.wikimedia.org/x/En-us-water.ogg', mime: 'application/ogg', mediatype: 'AUDIO' }],
               },
