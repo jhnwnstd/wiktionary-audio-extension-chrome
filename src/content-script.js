@@ -673,9 +673,11 @@ function batchFolderName(hostname, title) {
 }
 
 // Feedback states. `progress` is an open-ended state (no auto-reset) shown
-// while async work is in flight. Terminal states (`success`, `error`,
-// `partial`) auto-reset the button back to its idle look after 2s so the
-// reader has time to register the outcome without the button being stuck.
+// while async work is in flight. `success` also persists so the user can
+// see at a glance which items they've already downloaded while clicking
+// through the panel; only `error` and `partial` auto-reset so the button
+// stays clickable for a retry. State is per-panel-render -- a page refresh
+// wipes everything (no persistence layer).
 const FEEDBACK_COLORS = {
   progress: '#fbbc04',  // amber: "working"
   success:  '#34a853',  // green
@@ -693,9 +695,9 @@ function showFeedback(button, message, kind = 'success') {
   button.style.background = FEEDBACK_COLORS[kind] || FEEDBACK_COLORS.success;
   button.disabled = true;
 
-  // Progress states stay until they are explicitly replaced by a terminal
-  // state. Terminal states auto-clear so the button is reusable.
-  if (kind === 'progress') return;
+  // progress and success stay until something else replaces them. Only
+  // error and partial auto-clear.
+  if (kind === 'progress' || kind === 'success') return;
 
   button._feedbackTimer = setTimeout(() => {
     button.textContent = button._originalText;
@@ -724,9 +726,11 @@ function subModesFor(mode) {
 // Promise.allSettled is used everywhere so we get per-mode results without a
 // thrown exception triggering a silent fallback (which previously confused
 // users: a file would still land while the button said "Failed").
+// Returns true iff every sub-mode succeeded -- caller uses this to drive
+// per-panel "all downloaded" bookkeeping.
 async function downloadFile(item, button) {
   const mode = await getMode();
-  if (!mode) return;
+  if (!mode) return false;
   const subModes = subModesFor(mode);
 
   if (subModes.includes('convert')) showFeedback(button, t.preparingConverter, 'progress');
@@ -736,14 +740,17 @@ async function downloadFile(item, button) {
 
   if (okCount === subModes.length) {
     showFeedback(button, t.downloaded, 'success');
+    return true;
   } else if (okCount === 0) {
     if (settled.find(s => s.status === 'rejected')) {
       logError('Download failed:', settled.find(s => s.status === 'rejected').reason);
     }
     showFeedback(button, t.failed, 'error');
+    return false;
   } else {
     // Partial: only meaningful in `both` mode when one sub-mode succeeded.
     showFeedback(button, `${okCount}/${subModes.length} ${t.downloaded}`, 'partial');
+    return false;
   }
 }
 
@@ -871,6 +878,14 @@ function createUI(items) {
       </div>` : ''}
     </div>`;
 
+  // Per-panel completion tracking. Used so that when every individual
+  // Download button has succeeded, the Download All button auto-flips to
+  // "Downloaded" too -- even if the user never clicked it directly. State
+  // lives in this closure so a page refresh resets everything.
+  const batchBtn = /** @type {HTMLButtonElement | null} */ (panel.querySelector('#dl-all'));
+  /** @type {Set<number>} */
+  const downloadedIndexes = new Set();
+
   // Delegated click handling for preview + download buttons.
   panel.addEventListener('click', e => {
     const target = /** @type {HTMLElement} */ (e.target);
@@ -880,11 +895,17 @@ function createUI(items) {
       return;
     }
     const dl = /** @type {HTMLButtonElement | null} */ (target.closest('button[data-i]'));
-    if (dl) downloadFile(items[Number(dl.dataset.i)], dl);
+    if (!dl) return;
+    const idx = Number(dl.dataset.i);
+    downloadFile(items[idx], dl).then((ok) => {
+      if (!ok) return;
+      downloadedIndexes.add(idx);
+      if (batchBtn && downloadedIndexes.size === items.length) {
+        showFeedback(batchBtn, t.downloaded, 'success');
+      }
+    });
   });
 
-  // Batch button
-  const batchBtn = /** @type {HTMLButtonElement | null} */ (panel.querySelector('#dl-all'));
   if (batchBtn) batchBtn.onclick = () => downloadAll(items, batchBtn);
 
   // Minimize/restore -- pauses any active preview when collapsing. Also

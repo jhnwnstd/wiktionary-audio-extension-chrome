@@ -257,6 +257,53 @@ test.describe('content script audio discovery', () => {
     expect(audioFetchCount).toBe(1);
   });
 
+  // Regression: successful Download buttons stay green/Downloaded (no auto-
+  // reset), and when EVERY individual button has been clicked successfully,
+  // the Download All button auto-flips to Downloaded too -- so the user can
+  // tell at a glance which items they've already saved.
+  test('Downloaded state persists; all-individual completes auto-flips Download All', async () => {
+    const URL_A = 'https://upload.wikimedia.org/x/En-us-water.ogg';
+    const URL_B = 'https://upload.wikimedia.org/x/En-uk-water.ogg';
+    const FAKE_OGG = Buffer.from([0x4f, 0x67, 0x67, 0x53, 0x00, 0x02, 0x00, 0x00]);
+    await context.route(URL_A, (route) => route.fulfill({ status: 200, contentType: 'audio/ogg', body: FAKE_OGG }));
+    await context.route(URL_B, (route) => route.fulfill({ status: 200, contentType: 'audio/ogg', body: FAKE_OGG }));
+    await context.route('**/w/api.php**', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(actionApiResponse([
+          { title: 'File:En-us-water.ogg', url: URL_A },
+          { title: 'File:En-uk-water.ogg', url: URL_B },
+        ])),
+      })
+    );
+
+    const page = await context.newPage();
+    await page.goto(WATER_URL);
+    await expect(page.getByTestId('wad-panel')).toBeVisible();
+
+    const btnA = page.getByTestId('wad-download').nth(0);
+    const btnB = page.getByTestId('wad-download').nth(1);
+    const btnAll = page.getByTestId('wad-download-all');
+
+    // Click the first individual download, wait for Downloaded.
+    await btnA.click();
+    await expect(btnA).toContainText(/Downloaded/, { timeout: 15_000 });
+
+    // Confirm persistence: well past the old 2 s auto-reset window, button
+    // A is still in Downloaded state. The other buttons are unchanged.
+    await page.waitForTimeout(2500);
+    await expect(btnA).toContainText(/Downloaded/);
+    await expect(btnB).not.toContainText(/Downloaded/);
+    await expect(btnAll).not.toContainText(/Downloaded/);
+
+    // Click the second individual download. Now both items are downloaded
+    // -- Download All should auto-flip to Downloaded without being clicked.
+    await btnB.click();
+    await expect(btnB).toContainText(/Downloaded/, { timeout: 15_000 });
+    await expect(btnAll).toContainText(/Downloaded/, { timeout: 5_000 });
+  });
+
   // Regression: minimize >2s -> background evicts cached bytes and aborts
   // in-flight prefetch. Re-opening after dismissal triggers a fresh prefetch.
   // This pins the "user signaled disengagement" cleanup path.
