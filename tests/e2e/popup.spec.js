@@ -90,4 +90,37 @@ test.describe('popup', () => {
     await page.getByTestId('wad-mode-convert').locator('..').locator('span.radio-label').click();
     await expect(page.getByTestId('wad-mode-convert')).toBeChecked();
   });
+
+  // Regression: opening the popup with Convert/Both selected is treated as
+  // "download imminent" and pre-warms the offscreen FFmpeg document. This
+  // pins the POPUP_OPENED -> prewarmFFmpeg wiring so a future change can't
+  // silently disable it.
+  test('popup-open with convert mode pre-warms offscreen document', async () => {
+    // Seed convert mode via a throwaway page before the test popup opens.
+    const seed = await context.newPage();
+    await seed.goto(`chrome-extension://${extensionId}/popup.html`);
+    await seed.getByTestId('wad-mode-convert').check();
+    await expect
+      .poll(async () => seed.evaluate(async () => (await chrome.storage.sync.get('mode')).mode))
+      .toBe('convert');
+    await seed.close();
+
+    let [serviceWorker] = context.serviceWorkers();
+    if (!serviceWorker) serviceWorker = await context.waitForEvent('serviceworker');
+
+    // Open the popup fresh -- this is the "user clicks toolbar icon" event.
+    // popup.js fires POPUP_OPENED on load; background reads mode (convert)
+    // and pre-warms FFmpeg, which creates the offscreen document.
+    const page = await context.newPage();
+    await page.goto(`chrome-extension://${extensionId}/popup.html`);
+
+    // Poll until the offscreen document appears in the extension's context
+    // list. createDocument is async; allow generous time on cold CI.
+    await expect.poll(async () => serviceWorker.evaluate(async () => {
+      const contexts = await chrome.runtime.getContexts({
+        contextTypes: [/** @type {any} */ ('OFFSCREEN_DOCUMENT')],
+      });
+      return contexts.length;
+    }), { timeout: 10_000 }).toBeGreaterThan(0);
+  });
 });
