@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/jhnwnstd/wiktionary-audio-extension-chrome/actions/workflows/ci.yml/badge.svg)](https://github.com/jhnwnstd/wiktionary-audio-extension-chrome/actions/workflows/ci.yml)
 
-Chrome extension for downloading Wiktionary audio as the original file or a locally converted WAV copy.
+Chrome extension for downloading Wiktionary audio as the original file or a locally converted .WAV copy.
 
 ## Features
 
@@ -32,7 +32,7 @@ Batch downloads are grouped into a single subfolder named `Wiktionary-{edition}-
 
 ## Supported browsers
 
-The extension requires Manifest V3 and `chrome.offscreen`, which is available in Chrome 109 and newer. Other Chromium based browsers may work if they support the same extension APIs, but Chrome is the supported target.
+The extension requires Manifest V3 and `chrome.offscreen`, which is available in Chrome 109 and newer. Other Chromium based browsers may work if they support the same extension APIs but Chrome is the supported target.
 
 ## Permissions
 
@@ -41,7 +41,7 @@ The extension requires Manifest V3 and `chrome.offscreen`, which is available in
 - `offscreen` to run local FFmpeg.wasm conversion
 - Host access limited to Wiktionary and Wikimedia
 
-The extension collects no data and contacts no third-party servers. See [PRIVACY.md](PRIVACY.md) for the full breakdown of permissions and network behavior.
+The extension collects no data and contacts no third-party servers. See [PRIVACY.md](PRIVACY.md).
 
 ## Development
 
