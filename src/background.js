@@ -399,19 +399,23 @@ chrome.runtime.onMessage.addListener(
       // Original mode with cached bytes: skip the chrome.downloads URL fetch
       // by handing it a data URL built from the bytes we already have.
       // application/octet-stream is fine; the saved file's extension comes
-      // from `filename`, not the data URL's MIME.
+      // from `filename`, not the data URL's MIME. saveAs: false tells the
+      // browser to skip the "Save As..." chooser, which matters for batch
+      // downloads where prompting per file is unusable.
       log('[Background] Downloading original (cached):', originalFilename, folder ? `-> ${folder}/` : '');
       const base64 = arrayBufferToBase64(cached);
       const dataUrl = `data:application/octet-stream;base64,${base64}`;
       await chrome.downloads.download({
         url: dataUrl,
-        filename: pathWithFolder(folder, originalFilename)
+        filename: pathWithFolder(folder, originalFilename),
+        saveAs: false
       });
     } else {
       log('[Background] Downloading original:', originalFilename, folder ? `-> ${folder}/` : '');
       await chrome.downloads.download({
         url,
-        filename: pathWithFolder(folder, originalFilename)
+        filename: pathWithFolder(folder, originalFilename),
+        saveAs: false
       });
     }
     sendResponse({ ok: true });
