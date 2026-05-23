@@ -116,15 +116,19 @@ chrome.runtime.onConnect.addListener(port => {
     const outName = (outBase || 'audio') + '.wav';
 
     try {
-      // Fetch audio
+      // Fetch audio and load FFmpeg concurrently -- they're independent and
+      // both take a couple hundred milliseconds on a cold convert, so running
+      // them in parallel cuts the smaller wait off the critical path.
       log('[Offscreen] Fetching:', srcUrl.substring(0, 60));
-      const response = await fetch(srcUrl);
-      if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
-      const audioBytes = new Uint8Array(await response.arrayBuffer());
-      if (!audioBytes.length) throw new Error('Empty audio data');
+      const fetchBytes = (async () => {
+        const response = await fetch(srcUrl);
+        if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (!bytes.length) throw new Error('Empty audio data');
+        return bytes;
+      })();
 
-      // Load FFmpeg and convert
-      await loadFFmpeg();
+      const [audioBytes] = await Promise.all([fetchBytes, loadFFmpeg()]);
       await ffmpeg.writeFile(inName, audioBytes);
       await runTranscode(inName, outName);
 

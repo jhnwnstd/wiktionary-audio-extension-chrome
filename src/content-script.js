@@ -801,8 +801,22 @@ function previewAudio(item, button) {
   audio.play().catch(() => { button.innerHTML = PLAY_SVG; });
 }
 
+// Warm the TCP+TLS connection to upload.wikimedia.org while the user is
+// looking at the panel, so the eventual audio fetch (preview, download, or
+// offscreen convert) skips the handshake. Idempotent via the data attribute.
+function preconnectToUploadWikimedia() {
+  if (document.querySelector('link[data-wad-preconnect="upload-wikimedia"]')) return;
+  const link = document.createElement('link');
+  link.rel = 'preconnect';
+  link.href = 'https://upload.wikimedia.org';
+  link.crossOrigin = 'anonymous';
+  link.dataset.wadPreconnect = 'upload-wikimedia';
+  document.head.appendChild(link);
+}
+
 function createUI(items) {
   if (!items.length) return;
+  preconnectToUploadWikimedia();
 
   const panel = document.createElement('div');
   // Outer positioner -- viewport caps guarantee the panel always fits on
