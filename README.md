@@ -32,7 +32,7 @@ Batch downloads are grouped into a single subfolder named `Wiktionary-{edition}-
 
 ## Supported browsers
 
-The extension requires Manifest V3 and `chrome.offscreen`, which is available in Chrome 109 and newer. Other Chromium based browsers may work if they support the same extension APIs but Chrome is the supported target.
+The extension requires Manifest V3 and `chrome.offscreen`, which is available in Chrome 109 and newer. Other Chromium based browsers should work if they support the same extension APIs.
 
 ## Permissions
 
