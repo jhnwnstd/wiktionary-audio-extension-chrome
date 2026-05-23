@@ -1,4 +1,4 @@
-// Playwright config -- extension tests use launchPersistentContext per test,
+// Playwright config. Extension tests use launchPersistentContext per test,
 // so we don't declare browser projects here. Paths resolve relative to this
 // config file's own location (tests/), so testDir is './e2e' not './tests/e2e'.
 

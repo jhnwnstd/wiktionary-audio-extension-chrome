@@ -1,5 +1,5 @@
 // @ts-check
-// popup.js -- Settings for download mode (Original / Convert / Both)
+// popup.js: Settings for download mode (Original / Convert / Both).
 
 /** @type {HTMLInputElement[]} */
 const radios = /** @type {HTMLInputElement[]} */ (
@@ -57,7 +57,7 @@ async function saveSettings() {
   try {
     await chrome.storage.sync.set({ mode });
     // Switching INTO Convert/Both is itself a strong "download imminent"
-    // signal -- tell background so it can pre-warm FFmpeg now if needed,
+    // signal: tell background so it can pre-warm FFmpeg now if needed,
     // not wait for the next page load.
     notifyPopupOpened();
   } catch {

@@ -5,15 +5,17 @@
 // Run with:
 //   npx playwright test --config=tests/playwright.config.js --grep @profile
 //
-// For each of N trials, opens a fresh context (so each trial is cold-cache),
+// For each of N trials, opens a fresh context (so each trial is cold cache),
 // navigates to a Wiktionary page, and reads three timing milestones from the
-// Navigation Timing + Paint Timing APIs:
-//   * domContentLoaded -- DOM parsed and ready
-//   * load             -- all sync resources finished
-//   * first-contentful-paint -- first text/image painted (perceptual "started")
+// Navigation Timing + Paint Timing APIs.
 //
 // Runs both with and without the extension loaded. Prints per-trial numbers
 // and means so you can eyeball whether the delta is real or noise.
+//
+// Milestones captured:
+//   domContentLoaded:        DOM parsed and ready
+//   load:                    all sync resources finished
+//   first-contentful-paint:  first text/image painted (perceptual "started")
 
 const { test, chromium } = require('@playwright/test');
 const path = require('node:path');
@@ -64,7 +66,7 @@ async function measureOnce(withExtension) {
  * to upload.wikimedia.org), then navigate to page B and measure that.
  *
  * This is the "click a blue link to another Wiktionary entry" scenario. It
- * stresses whatever lingering work the extension is doing -- if the service
+ * stresses whatever lingering work the extension is doing: if the service
  * worker is busy with a prefetch when the user navigates, this is where
  * we'd see it.
  *
@@ -170,7 +172,7 @@ test.describe('page-load A/B', { tag: '@profile' }, () => {
 
   // Secondary-nav A/B: does clicking from one Wiktionary entry to another
   // get slower when the extension was active on the first page? This is
-  // what the user actually does -- they look up a word, see a blue link,
+  // what the user actually does: they look up a word, see a blue link,
   // click through.
   test('compare secondary-nav timings with vs without extension @profile', async () => {
     test.setTimeout(600_000);

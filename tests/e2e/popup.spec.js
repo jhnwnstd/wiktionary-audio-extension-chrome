@@ -1,5 +1,5 @@
 // @ts-check
-// Popup spec -- loads the extension via persistent context, opens the popup,
+// Popup spec. Loads the extension via persistent context, opens the popup,
 // asserts radios are present, and confirms mode selection persists across reload.
 
 const { test, expect, chromium } = require('@playwright/test');

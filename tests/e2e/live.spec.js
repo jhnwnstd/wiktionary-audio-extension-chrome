@@ -2,7 +2,7 @@
 // Live Wiktionary smoke + profiling. Tagged @live so it is excluded from the
 // default deterministic suite. Run with: npm run test:live
 //
-// Hits real Wikimedia endpoints -- keep it sequential and gentle. Network or
+// Hits real Wikimedia endpoints, so keep it sequential and gentle. Network or
 // content drift will surface as a failure; deterministic specs cover schema.
 
 const { test, expect, chromium } = require('@playwright/test');
@@ -84,7 +84,7 @@ test.describe('discovery sweep', { tag: '@live' }, () => {
 
       discoveryMetrics.push({ url, panelMs, firstItemMs, itemCount, sampleNames, err });
 
-      // Live discovery is informational, not assertive -- Wiktionary entries
+      // Live discovery is informational, not assertive. Wiktionary entries
       // vary by edition. The afterAll summary lists which URLs found audio;
       // a catastrophic regression would surface as 0/N across all URLs.
     });
@@ -164,12 +164,12 @@ test.describe('download paths', { tag: '@live' }, () => {
     const start = Date.now();
     await btn.click();
     // Content script flips the button text to "Downloaded" (or localized
-    // equivalent) on success -- see src/content-script.js downloadFile.
+    // equivalent) on success; see src/content-script.js downloadFile.
     await expect(btn).toContainText(/Downloaded/, { timeout: 30_000 });
     downloadMetrics.push({ label: 'Original click->ack', ms: Date.now() - start });
   });
 
-  // Batch flow -- clicks Download All and waits for the summary "N/N Downloaded"
+  // Batch flow. Clicks Download All and waits for the summary "N/N Downloaded"
   // text. Proves the per-page subfolder + fan-out work end-to-end against real
   // Wikimedia. Sized at 30s per item; en/water typically has 2-5 audio items.
   test('Download All batch flow completes with all items succeeded', async () => {
@@ -238,8 +238,8 @@ test.describe('download paths', { tag: '@live' }, () => {
 });
 
 // Viewport sweep against a real Wiktionary page. Per viewport size:
-//   1) hard guard -- panel must be fully inside the viewport (no clipping)
-//   2) soft metric -- measure overlap with article text, log + screenshot
+//   1) hard guard: panel must be fully inside the viewport (no clipping)
+//   2) soft metric: measure overlap with article text, log + screenshot
 //
 // Overlap with the article is logged rather than asserted: some overlap is
 // expected on viewports below 1920 because Wiktionary's content extends close

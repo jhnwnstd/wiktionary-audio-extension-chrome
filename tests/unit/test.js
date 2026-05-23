@@ -10,7 +10,7 @@ function section(name) { console.log(name); }
 
 // ============ Replicate extension logic for testing ============
 
-// Mirrored from src/content-script.js -- keep in sync.
+// Mirrored from src/content-script.js. Keep in sync.
 const AUDIO_MIMES = new Set([
   'application/ogg',
 ]);
@@ -25,7 +25,7 @@ function isAudioFile(filename, mimeType) {
   return typeof filename === 'string' && AUDIO_EXT_RE.test(filename);
 }
 
-// Mirrored from src/content-script.js -- keep in sync.
+// Mirrored from src/content-script.js. Keep in sync.
 function isAudioInfo(info) {
   if (!info) return false;
   if (typeof info.mediatype === 'string' && info.mediatype.length > 0) {
@@ -57,7 +57,7 @@ function audioItemsFromPages(pages) {
   return results;
 }
 
-// Mirrored from src/background.js sanitizeFilename -- keep in sync.
+// Mirrored from src/background.js sanitizeFilename. Keep in sync.
 const WINDOWS_RESERVED_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
 const FORBIDDEN_CHARS_RE = /[<>:"/\\|?*\x00-\x1f]/g;
 const UTF8_ENCODER = new TextEncoder();
@@ -90,7 +90,7 @@ function sanitizeFilename(filename) {
   return s || 'audio';
 }
 
-// Mirrored from src/content-script.js -- keep in sync.
+// Mirrored from src/content-script.js. Keep in sync.
 const ISO_639_3_TO_1 = {
   eng: 'en', deu: 'de', fra: 'fr', spa: 'es', ita: 'it',
   jpn: 'ja', zho: 'zh', cmn: 'zh', yue: 'zh', por: 'pt',
@@ -245,14 +245,14 @@ function humanReadableName(parsed, originalFilename) {
 }
 function humanReadable(raw) { return humanReadableName(parseAudioFilename(raw), raw); }
 
-// Mirrored from src/content-script.js batchFolderName -- keep in sync.
+// Mirrored from src/content-script.js batchFolderName. Keep in sync.
 function batchFolderName(hostname, title) {
   const m = hostname.match(/^([a-z]{2,3})\.wiktionary\.org$/);
   const edition = m?.[1] || 'wiktionary';
   return `Wiktionary-${edition}-${title || 'audio'}`;
 }
 
-// Mirrored from src/background.js pathWithFolder -- keep in sync.
+// Mirrored from src/background.js pathWithFolder. Keep in sync.
 function pathWithFolder(folder, filename) {
   const file = sanitizeFilename(filename);
   if (!folder) return file;
@@ -453,13 +453,13 @@ assert(
 assert(humanReadable('Zh-cmn-shuǐ.ogg') === "Chinese Mandarin 'shuǐ' .ogg", 'Chinese topolect dialect -> display');
 
 section('Hyphenated speakers and compound words (parser ambiguity)');
-// Hyphenated speaker, simple word -- greedy speaker handles this without context.
+// Hyphenated speaker, simple word: greedy speaker handles this without context.
 const hs1 = parseAudioFilename('LL-Q150_(fra)-Jérémy-Günther-water.wav');
 assert(
   hs1.lang === 'fra' && hs1.speaker === 'Jérémy-Günther' && hs1.word === 'water',
   'hyphenated speaker, simple word: speaker=Jérémy-Günther, word=water'
 );
-// Same file with explicit knownWord -- still parses correctly.
+// Same file with explicit knownWord still parses correctly.
 const hs2 = parseAudioFilename('LL-Q150_(fra)-Jérémy-Günther-water.wav', 'water');
 assert(
   hs2.speaker === 'Jérémy-Günther' && hs2.word === 'water',
@@ -472,7 +472,7 @@ assert(
   'multi-hyphen compound name resolves to single speaker'
 );
 
-// Compound WORD without anchor: degrades -- last token becomes word.
+// Compound WORD without anchor: degrades to the last token as the word.
 const cw1 = parseAudioFilename('LL-Q1860_(eng)-Stebbington-well-known.wav');
 assert(
   cw1.speaker === 'Stebbington-well' && cw1.word === 'known',
@@ -505,7 +505,7 @@ assert(
   'LL3 hyphenated speaker with anchor'
 );
 
-// Compound word with greedy default (no anchor) -- speaker absorbs hyphen
+// Compound word with greedy default (no anchor): speaker absorbs hyphen
 // regions but the lang code anchor still works because lang must be 2-3 chars.
 const llSH2 = parseAudioFilename('LL-Speaker-fr-eau.wav');
 assert(
@@ -518,15 +518,15 @@ assert(parseAudioFilename('En-au-Georgian.ogg', 'Georgian').dialect === 'au', 'n
 assert(parseAudioFilename('De-Wasser.ogg').lang === 'de', 'non-LL parser still works without anchor arg');
 
 section('Findings from real Wiktionary data');
-// Quebec French -- region used as language prefix, no separate lang code.
+// Quebec French: region used as language prefix, no separate lang code.
 assert(formatAudio('Qc-café.ogg') === 'quebec-french_café.ogg', 'Qc -> quebec-french in filename');
 assert(humanReadable('Qc-café.ogg') === "Quebec French 'café' .ogg", 'Qc -> Quebec French in display');
 
-// Jèrriais -- variety with its own Wiktionary entry but no ISO 639-1 code.
+// Jèrriais: variety with its own Wiktionary entry but no ISO 639-1 code.
 assert(formatAudio('Jer-cat.ogg') === 'jèrriais_cat.ogg', 'Jer -> jèrriais in filename');
 assert(humanReadable('Jer-cat.ogg') === "Jèrriais 'cat' .ogg", 'Jer -> Jèrriais in display');
 
-// Long regional dialect tag -- only resolves cleanly with knownWord anchor.
+// Long regional dialect tag only resolves cleanly with knownWord anchor.
 // Without context, the dialect is capped at 7 chars to avoid greedy over-match
 // in the common "En-us-hello-4" case (where us-hello would otherwise be eaten).
 const inlandRaw = parseAudioFilename('En-inlandnorth-cat.ogg');
@@ -548,7 +548,7 @@ assert(
   'anchored: inlandnorth -> Inland North in display'
 );
 
-// Compound dialect (us-inlandnorth) -- needs anchor + compound-split.
+// Compound dialect (us-inlandnorth) needs anchor + compound-split.
 const compoundDialect = parseAudioFilename('En-us-inlandnorth-cat.ogg', 'cat');
 assert(
   compoundDialect.dialect === 'us-inlandnorth' && compoundDialect.word === 'cat',
@@ -563,7 +563,7 @@ assert(
   'compound dialect -> multi-word display'
 );
 
-// Variant-indexed file (En-us-hello-4) -- anchor accepts pageTitle-<suffix>
+// Variant-indexed file (En-us-hello-4): anchor accepts pageTitle-<suffix>
 // so dialect stays at `us` and the suffix rides on the word.
 const variantAnchored = parseAudioFilename('En-us-hello-4.ogg', 'hello');
 assert(
@@ -670,7 +670,7 @@ assert(formatAudio('Vi-X.ogg') === 'vietnamese_X.ogg', 'vi (Vietnamese) via Intl
 assert(formatAudio('Eo-X.ogg') === 'esperanto_X.ogg', 'eo (Esperanto) via Intl');
 // Region/dialect that isn't in DIALECT_ADJECTIVES falls back to Intl region.
 const intlRegion = formatAudio('Es-cl-agua.ogg');
-assert(intlRegion === 'spanish_chile_agua.ogg' || intlRegion === 'spanish_cl_agua.ogg', 'cl (Chile) via Intl region -- noun form acceptable');
+assert(intlRegion === 'spanish_chile_agua.ogg' || intlRegion === 'spanish_cl_agua.ogg', 'cl (Chile) via Intl region: noun form acceptable');
 
 section('Title extraction');
 assert(extractTitle('/wiki/water') === 'water', 'simple');
@@ -695,7 +695,7 @@ assert(atob(arrayBufferToBase64(large)).length === 100000, 'large roundtrip');
 // Reads src/content-script.js as text and pulls keys out of each locale block
 // in `const i18n = { ... }`. Catches drift where a new key is added to `en`
 // but missed in fr/de/etc., which would silently fall back to undefined in
-// the UI. No eval -- pure regex extraction so the test stays safe even if
+// the UI. No eval; pure regex extraction so the test stays safe even if
 // the source ever picked up a hostile string.
 section('i18n locale key parity');
 const fs = require('node:fs');

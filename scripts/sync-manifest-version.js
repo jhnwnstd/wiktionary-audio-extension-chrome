@@ -1,5 +1,5 @@
 // Sync src/manifest.json's `version` field from package.json. Invoked by
-// npm's `version` lifecycle script -- run `npm version minor` (etc.) and
+// npm's `version` lifecycle script. Run `npm version minor` (etc.) and
 // this keeps the Chrome extension manifest aligned with package.json
 // without touching any other field or reformatting the file.
 

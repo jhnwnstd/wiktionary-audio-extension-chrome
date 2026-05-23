@@ -1,4 +1,4 @@
-// offscreen.js -- FFmpeg.wasm audio conversion (MV3 module, CSP-safe)
+// offscreen.js: FFmpeg.wasm audio conversion (MV3 module, CSP safe).
 
 const DEBUG = false;
 const log = DEBUG ? console.log.bind(console) : () => {};
@@ -45,48 +45,24 @@ async function cleanupFiles(...names) {
   }
 }
 
-// Conversion profile pinned to the vendored FFmpeg.wasm core's capabilities.
-// We deliberately do NOT runtime-probe or fall back between commands inside
-// the worker -- a failed `ffmpeg.exec` can poison the worker state and break
-// subsequent execs. Instead this constant is the single source of truth; the
-// live convert test verifies it works against the vendored core.
+// Output is always 16 bit PCM WAV, mono, 48 kHz, with triangular dither on
+// quantization. No normalization, gain, denoise, or silence trim: lossy
+// source audio can't be restored to higher fidelity, so this command just
+// standardizes container plus rate for downstream analysis tools.
 //
-// Profiles, from best to safest:
-//   'soxr'     -af aresample=resampler=soxr:precision=28:dither_method=triangular
-//              (needs libsoxr in the build; not in upstream @ffmpeg/core)
-//   'aresample' -af aresample=dither_method=triangular
-//              (needs libavfilter + aresample in the build; default upstream)
-//   'safe'      no -af filter, bare PCM conversion
-//
-// Output is always 16-bit PCM WAV, mono, 48 kHz. No normalization, gain,
-// denoise, or silence trim. Lossy source audio can't be restored to higher
-// fidelity; this command standardizes container + rate for analysis tools.
-const FFMPEG_CORE_PROFILE = 'aresample';
-
-const ARGS_BY_PROFILE = {
-  safe: (inName, outName) => [
-    '-i', inName, '-vn',
-    '-c:a', 'pcm_s16le', '-ar', '48000', '-ac', '1',
-    '-y', outName,
-  ],
-  aresample: (inName, outName) => [
+// `aresample=dither_method=triangular` requires libavfilter + aresample in
+// the wasm core build (default in upstream @ffmpeg/core). We deliberately
+// do NOT runtime probe or fall back between filters: a failed `ffmpeg.exec`
+// can poison the worker state and break subsequent calls. The live convert
+// test verifies these args work against the vendored core.
+async function runTranscode(inName, outName) {
+  const args = [
     '-i', inName, '-vn',
     '-af', 'aresample=dither_method=triangular',
     '-c:a', 'pcm_s16le', '-ar', '48000', '-ac', '1',
     '-y', outName,
-  ],
-  soxr: (inName, outName) => [
-    '-i', inName, '-vn',
-    '-af', 'aresample=resampler=soxr:precision=28:dither_method=triangular',
-    '-c:a', 'pcm_s16le', '-ar', '48000', '-ac', '1',
-    '-y', outName,
-  ],
-};
-
-async function runTranscode(inName, outName) {
-  const buildArgs = ARGS_BY_PROFILE[FFMPEG_CORE_PROFILE] || ARGS_BY_PROFILE.safe;
-  const args = buildArgs(inName, outName);
-  log('[Offscreen] ffmpeg', args.join(' '), '(profile=' + FFMPEG_CORE_PROFILE + ')');
+  ];
+  log('[Offscreen] ffmpeg', args.join(' '));
   await ffmpeg.exec(args);
 }
 
@@ -103,8 +79,8 @@ chrome.runtime.onConnect.addListener(port => {
 
     if (msg?.type === 'PREWARM') {
       // Trigger FFmpeg.load() without converting anything. Caller resolves
-      // when PREWARMED arrives (or times out). Failures are swallowed --
-      // the user will pay the load on first real click if pre-warm failed.
+      // when PREWARMED arrives (or times out). Failures are swallowed; the
+      // user will pay the load on first real click if pre-warm failed.
       loadFFmpeg().then(
         () => port.postMessage({ type: 'PREWARMED', ok: true }),
         () => port.postMessage({ type: 'PREWARMED', ok: false }),
@@ -128,10 +104,9 @@ chrome.runtime.onConnect.addListener(port => {
 
     try {
       // Two paths:
-      //   * srcBytes -- background's prefetch cache already has the bytes;
-      //     skip the fetch entirely. Convert into Uint8Array up front; load
-      //     FFmpeg in parallel.
-      //   * srcUrl   -- no cached bytes; fetch concurrently with FFmpeg load.
+      //   srcBytes: background's prefetch cache already has the bytes, so
+      //     skip the fetch. Wrap as Uint8Array; FFmpeg loads in parallel.
+      //   srcUrl: no cached bytes. Fetch concurrently with FFmpeg load.
       const fetchBytes = srcBytes
         ? Promise.resolve(new Uint8Array(srcBytes))
         : (async () => {

@@ -1,10 +1,9 @@
 // @ts-check
-// background.js -- Service worker for Wiktionary audio downloads
+// background.js: Service worker for Wiktionary audio downloads.
 //
-// Wrapped in an IIFE so `DEBUG`, `log`, `logError` are function-scoped
-// rather than file-scoped, avoiding cross-file collisions with the same
-// identifiers in content-script.js when both files are type-checked under
-// the project's jsconfig. Service-worker behavior is unchanged.
+// IIFE keeps `DEBUG`, `log`, `logError` file scoped so they don't collide
+// with the same identifiers in content-script.js under the project's
+// jsconfig. Service worker behavior is unchanged.
 (() => {
 
 const DEBUG = false;
@@ -15,8 +14,8 @@ const logError = console.error.bind(console);
 function arrayBufferToBase64(arrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
   // 8 KB chunks avoid `Maximum call stack size exceeded` from large spreads.
-  // No "fast path" for small inputs -- Convert output is 96 KB/sec PCM, so
-  // every real conversion exceeds that threshold anyway.
+  // No "fast path" for small inputs since Convert output is 96 KB/sec PCM
+  // and every real conversion exceeds the small payload threshold anyway.
   let bin = '';
   for (let i = 0; i < bytes.length; i += 8192) {
     bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
@@ -24,18 +23,19 @@ function arrayBufferToBase64(arrayBuffer) {
   return btoa(bin);
 }
 
-// Cross-platform filename sanitizer covering the union of Windows, macOS, and
-// Linux filesystem restrictions. Preserves Unicode (e.g. 水, café) but enforces
-// a 255-byte UTF-8 cap, since most real filesystems use byte-length not
-// codepoint-length -- a 100-character Chinese filename is ~300 bytes on disk.
+// Cross platform filename sanitizer covering the union of Windows, macOS,
+// and Linux filesystem restrictions. Preserves Unicode (e.g. 水, café) but
+// enforces a 255 byte UTF-8 cap, since most real filesystems use byte
+// length not codepoint length. A 100 character Chinese filename is ~300
+// bytes on disk.
 //
 // Rules enforced:
 //   * forbidden chars: < > : " / \ | ? * and control chars 0x00-0x1F
 //   * Windows reserved basenames: CON, PRN, AUX, NUL, COM1-9, LPT1-9
 //   * Windows forbids trailing space or period
 //   * leading dots stripped (avoids Unix hidden-file surprise)
-//   * 255-byte UTF-8 cap, preserving extension when possible
-//   * never empty -- falls back to "audio"
+//   * 255 byte UTF-8 cap, preserving extension when possible
+//   * never empty: falls back to "audio"
 
 const WINDOWS_RESERVED_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
 const FORBIDDEN_CHARS_RE = /[<>:"/\\|?*\x00-\x1f]/g;
@@ -125,7 +125,7 @@ async function ensureOffscreen() {
       justification: 'Run ffmpeg.wasm for audio conversion'
     });
   } catch {
-    // Already exists -- Chrome enforces single offscreen doc
+    // Already exists. Chrome enforces single offscreen doc.
   }
 
   // Retry ping up to 4 times (handles slow module loading after createDocument)
@@ -144,11 +144,11 @@ async function ensureOffscreen() {
 
 /**
  * Speculative pre-warm: spin up the offscreen document and have it load the
- * FFmpeg wasm core without converting anything. Used when the user opens the
- * popup with Convert/Both selected -- they're about to download and we have
- * ~2-5 seconds of popup-reading time to absorb the ~350-650 ms cold start.
- * Fire-and-forget from callers; failures are swallowed because the user will
- * just pay the load on their first real click.
+ * FFmpeg wasm core without converting anything. Used when the user opens
+ * the popup with Convert/Both selected, because they're about to download
+ * and we have ~2-5 seconds of popup reading time to absorb the ~350-650 ms
+ * cold start. Fire and forget from callers; failures are swallowed because
+ * the user will just pay the load on their first real click.
  */
 async function prewarmFFmpeg() {
   log('[Background] Pre-warming FFmpeg...');
@@ -171,11 +171,13 @@ async function prewarmFFmpeg() {
 }
 
 /**
- * Send a TRANSCODE request to the offscreen FFmpeg worker. Accepts either a
- * URL (offscreen fetches) or an ArrayBuffer of pre-fetched bytes (offscreen
- * skips the fetch -- used when the prefetch cache has the bytes ready).
+ * Send a TRANSCODE request to the offscreen FFmpeg worker. Accepts either
+ * a URL (offscreen fetches) or an ArrayBuffer of pre-fetched bytes
+ * (offscreen skips its own fetch). The bytes path is used when the
+ * prefetch cache has the audio ready.
+ *
  * @param {string | ArrayBuffer} src
- * @param {string} baseName - filename without extension; offscreen appends `.wav`
+ * @param {string} baseName  filename without extension; offscreen appends `.wav`
  * @returns {Promise<{ filename: string, arrayBuffer: ArrayBuffer }>}
  */
 async function transcodeToWav(src, baseName) {
@@ -216,11 +218,11 @@ async function transcodeToWav(src, baseName) {
 
 // ============== AUDIO PREFETCH CACHE ==============
 //
-// Once the content script discovers audio on a Wiktionary page it sends the
-// URLs here for proactive fetching. We hold the ArrayBuffers in memory so the
-// eventual download skips the network round-trip on both Original and Convert
-// paths. Bounded by total bytes; LRU-evicted; lost on SW restart (acceptable
-// -- next click just refetches via the existing URL path).
+// Once the content script discovers audio on a Wiktionary page it sends
+// the URLs here for proactive fetching. We hold the ArrayBuffers in
+// memory so the eventual download skips the network round trip on both
+// Original and Convert paths. Bounded by total bytes; LRU evicted; lost
+// on SW restart. The next click just refetches via the existing URL path.
 
 const PREFETCH_CACHE_MAX_BYTES = 20 * 1024 * 1024; // 20 MB
 const PREFETCH_CONCURRENCY = 3;
@@ -293,7 +295,7 @@ async function prefetchAudioUrls(urls) {
         if (!r.ok) continue;
         const bytes = await r.arrayBuffer();
         if (bytes.byteLength) addToCache(url, bytes);
-      } catch { /* best-effort -- one URL failing (or AbortError) shouldn't block others */ }
+      } catch { /* best effort. One URL failing (or AbortError) shouldn't block others. */ }
       finally {
         inflightPrefetches.delete(url);
       }
@@ -322,11 +324,11 @@ function dismissUrls(urls) {
   }
 }
 
-// Prepend an optional subfolder to a sanitized filename. Folder and file are
-// sanitized independently so neither can inject a `/`; the separator is
-// inserted after sanitization. chrome.downloads accepts forward slashes
-// cross-platform and auto-creates intermediate directories.
 /**
+ * Prepend an optional subfolder to a sanitized filename. Folder and file
+ * are sanitized independently so neither can inject a `/`. chrome.downloads
+ * accepts forward slashes cross-platform and creates intermediate dirs.
+ *
  * @param {string | undefined | null} folder
  * @param {string} filename
  * @returns {string}
@@ -339,7 +341,7 @@ function pathWithFolder(folder, filename) {
 
 chrome.runtime.onMessage.addListener(
   /**
-   * @param {any} msg - arbitrary content; we narrow on `msg.type`
+   * @param {any} msg  arbitrary content; we narrow on `msg.type`
    * @param {any} _sender
    * @param {(response: DownloadResponse) => void} sendResponse
    */
@@ -362,7 +364,7 @@ chrome.runtime.onMessage.addListener(
   }
 
   // User opened the popup (or changed mode). Strong "download imminent"
-  // signal -- pre-warm FFmpeg in the background if mode requires it, so
+  // signal: pre-warm FFmpeg in the background if mode requires it, so
   // the next Convert click skips the cold load entirely.
   if (msg?.type === 'POPUP_OPENED') {
     (async () => {

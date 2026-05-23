@@ -1,19 +1,19 @@
 // @ts-check
-// content-script.js -- Wiktionary audio discovery, UI panel, download actions
+// content-script.js: Wiktionary audio discovery, UI panel, download actions.
 
 /**
  * One pronunciation audio entry surfaced by Action API discovery. The two
  * `*Name` fields are computed from `filename` after parsing and are what
  * the panel and download path actually use.
  * @typedef {object} AudioItem
- * @property {string} title - MediaWiki File: title
- * @property {string} url - direct upload.wikimedia.org URL
- * @property {string} filename - source filename (e.g. "En-us-water.ogg")
+ * @property {string} title  MediaWiki File: title
+ * @property {string} url  direct upload.wikimedia.org URL
+ * @property {string} filename  source filename (e.g. "En-us-water.ogg")
  * @property {string} [mime]
  * @property {number} [size]
- * @property {string} [downloadName] - sanitized friendly filename for chrome.downloads
- * @property {string} [displayName] - human-readable form rendered in the panel
- * @property {string|null} [lang] - parsed ISO 639 code, used by the English-first sort
+ * @property {string} [downloadName]  sanitized friendly filename for chrome.downloads
+ * @property {string} [displayName]  human readable form rendered in the panel
+ * @property {string|null} [lang]  parsed ISO 639 code, used by the English first sort
  */
 
 /**
@@ -25,18 +25,12 @@
  * @property {string|null} dialect
  * @property {string|null} speaker
  * @property {string} word
- * @property {string|null} extra - phonetic qualifier (e.g. "cot-caught-merger")
- * @property {string} ext - extension without leading dot, lowercased
+ * @property {string|null} extra  phonetic qualifier (e.g. "cot-caught-merger")
+ * @property {string} ext  extension without leading dot, lowercased
  */
 
-// DownloadMessage and DownloadResponse are declared ambient in
-// src/globals.d.ts so this file and background.js share the same shape
-// without per-file @typedef blocks colliding under the project's jsconfig.
-//
-// The whole file is wrapped in an IIFE so `DEBUG`, `log`, `logError` are
-// function-scoped (not global), avoiding cross-file collisions with the
-// same identifiers in background.js. Behavior in the isolated content
-// script world is unchanged.
+// IIFE keeps `logError` file-scoped (background.js has its own). The
+// shared DownloadResponse type is ambient in src/globals.d.ts.
 (() => {
 
 const logError = console.error.bind(console);
@@ -206,7 +200,7 @@ const ISO_639_3_TO_1 = {
 // poorly). These usually appear in Wiktionary as the file's language prefix
 // when the file is region-specific (Qc = Quebec French) or when the variety
 // has its own entry on Wiktionary even though it shares a parent language
-// (Jer = Jèrriais, a variety of Norman). Kept small -- only verified from
+// (Jer = Jèrriais, a variety of Norman). Kept small. Only verified from
 // real data in the live sweep.
 const LANG_OVERRIDES = {
   qc: 'quebec-french',
@@ -215,7 +209,7 @@ const LANG_OVERRIDES = {
 
 // Dialect adjectives. Intl returns nouns ("United States", "Australia") via
 // the region API, but filenames read more naturally with adjectives. This
-// table is intentionally short -- anything not listed falls through to the
+// table is intentionally short. Anything not listed falls through to the
 // region API, then to the raw code.
 //
 // Separator convention: `-` joins words within a single field value; `_`
@@ -317,17 +311,14 @@ function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// Parse a Wiktionary audio filename. The optional `knownWord` is the page
-// title (e.g. "water" or "well-known") -- when supplied, the parser anchors
-// the word to a trailing match of that title, which correctly handles both
-// hyphenated speakers ("Jérémy-Günther-Heinz Jähnick") and hyphenated words
-// ("well-known") in the same call. Without context, we assume speakers are
-// more likely to have hyphens than words.
 /**
- * Parse a Wiktionary audio filename into structured fields.
- * @param {string} raw - filename or URL; query string is stripped defensively
- * @param {string|null} [knownWord] - page title used to anchor the trailing
- *   `word` segment for compound speakers / phonetic-extra cases
+ * Parse a Wiktionary audio filename into structured fields. When `knownWord`
+ * (the page title) is supplied, the parser anchors the trailing `word`
+ * segment to it, disambiguating hyphenated speakers from hyphenated words
+ * like "well-known".
+ *
+ * @param {string} raw  filename or URL; query string is stripped defensively
+ * @param {string|null} [knownWord]
  * @returns {ParsedFilename}
  */
 function parseAudioFilename(raw, knownWord = null) {
@@ -531,9 +522,9 @@ const AUDIO_MIMES = new Set([
 
 // Extensions that are unambiguously audio by file format or convention.
 // `.m4a` is the audio-only naming variant of MPEG-4 Part 14; `.aac` is a
-// raw AAC stream (no container = no video). `.webm` is excluded because
+// raw AAC stream (no container, so no video). `.webm` is excluded because
 // the WebM container can carry video and Wiktionary doesn't serve audio
-// in WebM -- a mislabeled .webm slipping through here would risk treating
+// in WebM, so a mislabeled .webm slipping through here would risk treating
 // a video file as audio.
 const AUDIO_EXT_RE = /\.(ogg|oga|opus|mp3|wav|flac|m4a|aac)$/i;
 
@@ -541,8 +532,8 @@ function isAudioInfo(info) {
   if (!info) return false;
   // Authoritative: if Wikimedia tagged this with a non-empty mediatype,
   // trust it. Any non-AUDIO value (VIDEO, BITMAP, DRAWING, ...) is a hard
-  // reject -- this is the strongest signal we have and it stops video
-  // files from slipping through on extension-only matches below.
+  // reject. This is the strongest signal we have and it stops video files
+  // from slipping through on extension-only matches below.
   if (typeof info.mediatype === 'string' && info.mediatype.length > 0) {
     return info.mediatype.toUpperCase() === 'AUDIO';
   }
@@ -602,12 +593,11 @@ function isEnglishLang(lang) {
   return code === 'en' || code === 'eng';
 }
 
-// Discover all audio files attached to a page via Action API. Handles
-// generator continuation so long entries (e.g. fr/eau with 33+ items) aren't
-// truncated. formatversion=2 gives us pages as an array -- cleaner than the
-// v1 object-keyed-by-pageid format.
 /**
- * Discover all audio files attached to a page via Action API.
+ * Discover all audio files attached to a page via Action API. Handles
+ * generator continuation so long entries (e.g. fr/eau with 33+ items)
+ * aren't truncated.
+ *
  * @param {string} title
  * @returns {Promise<AudioItem[]>}
  */
@@ -621,7 +611,7 @@ async function discoverAudio(title) {
     generator: 'images',
     gimlimit: 'max',
     prop: 'imageinfo',
-    iiprop: 'url|mime|mediatype|size|canonicaltitle',
+    iiprop: 'url|mime|mediatype|size',
   };
 
   const results = [];
@@ -672,12 +662,12 @@ function batchFolderName(hostname, title) {
   return `Wiktionary-${edition}-${title || 'audio'}`;
 }
 
-// Feedback states. `progress` is an open-ended state (no auto-reset) shown
-// while async work is in flight. `success` also persists so the user can
-// see at a glance which items they've already downloaded while clicking
-// through the panel; only `error` and `partial` auto-reset so the button
-// stays clickable for a retry. State is per-panel-render -- a page refresh
-// wipes everything (no persistence layer).
+// Feedback states. `progress` is an open ended state (no auto-reset)
+// shown while async work is in flight. `success` also persists so the
+// user can see at a glance which items they've already downloaded; only
+// `error` and `partial` auto-reset so the button stays clickable for a
+// retry. State is per panel render: a page refresh wipes everything
+// (no persistence layer).
 const FEEDBACK_COLORS = {
   progress: '#fbbc04',  // amber: "working"
   success:  '#34a853',  // green
@@ -723,10 +713,10 @@ function subModesFor(mode) {
   return mode === 'both' ? ['original', 'convert'] : [mode];
 }
 
-// Promise.allSettled is used everywhere so we get per-mode results without a
-// thrown exception triggering a silent fallback (which previously confused
-// users: a file would still land while the button said "Failed").
-// Returns true iff every sub-mode succeeded -- caller uses this to drive
+// Promise.allSettled is used everywhere so we get per mode results without
+// a thrown exception triggering a silent fallback (which previously
+// confused users: a file would still land while the button said "Failed").
+// Returns true iff every sub-mode succeeded; caller uses this to drive
 // per-panel "all downloaded" bookkeeping.
 async function downloadFile(item, button) {
   const mode = await getMode();
@@ -782,12 +772,12 @@ async function downloadAll(items, button) {
 
 // ============== UI ==============
 
-// SVG glyphs for preview controls. No emoji -- vector icons render cleanly
+// SVG glyphs for preview controls. No emoji: vector icons render cleanly
 // at any size and inherit page color via currentColor.
 const PLAY_SVG = `<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>`;
 const PAUSE_SVG = `<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z" fill="currentColor"/></svg>`;
 
-// One Audio instance at a time -- switching items pauses the previous one.
+// One Audio instance at a time; switching items pauses the previous one.
 /** @type {{ audio: HTMLAudioElement, button: HTMLButtonElement } | null} */
 let activePreview = null;
 
@@ -841,11 +831,11 @@ function createUI(items) {
   preconnectToUploadWikimedia();
 
   const panel = document.createElement('div');
-  // Outer positioner -- viewport caps guarantee the panel always fits on
-  // screen regardless of window size. --wad-edge-gap shrinks the margin on
-  // very narrow viewports; on 1280+ desktops it pins at 16px. Flex column
-  // lets the inner panel shrink its scrollable body when the viewport is
-  // too short for the preferred max-height.
+  // Outer positioner. Viewport caps guarantee the panel always fits on
+  // screen regardless of window size. The --wad-edge-gap custom property
+  // shrinks the margin on very narrow viewports; on 1280+ desktops it
+  // pins at 16px. Flex column lets the inner panel shrink its scrollable
+  // body when the viewport is too short for the preferred max-height.
   panel.style.cssText = [
     '--wad-edge-gap:clamp(8px, 1.25vw, 16px)',
     'position:fixed',
@@ -880,7 +870,7 @@ function createUI(items) {
 
   // Per-panel completion tracking. Used so that when every individual
   // Download button has succeeded, the Download All button auto-flips to
-  // "Downloaded" too -- even if the user never clicked it directly. State
+  // "Downloaded" too, even if the user never clicked it directly. State
   // lives in this closure so a page refresh resets everything.
   const batchBtn = /** @type {HTMLButtonElement | null} */ (panel.querySelector('#dl-all'));
   /** @type {Set<number>} */
@@ -908,7 +898,7 @@ function createUI(items) {
 
   if (batchBtn) batchBtn.onclick = () => downloadAll(items, batchBtn);
 
-  // Minimize/restore -- pauses any active preview when collapsing. Also
+  // Minimize/restore pauses any active preview when collapsing. Also
   // gates prefetch lifecycle: minimizing for >2s tells the background to
   // evict this page's bytes (user has signaled they won't use the panel);
   // re-opening after that triggers a fresh prefetch.
@@ -931,7 +921,7 @@ function createUI(items) {
 
     if (minimized) {
       // Arm the dismiss timer. If the panel stays minimized past 2s, treat
-      // the user's intent as "not using the extension on this page" -- ask
+      // the user's intent as "not using the extension on this page". Ask
       // background to evict the bytes and abort in-flight prefetch.
       dismissTimer = /** @type {any} */ (setTimeout(() => {
         dismissTimer = null;
@@ -968,10 +958,10 @@ function createUI(items) {
     const audioFiles = await discoverAudio(pageTitle);
 
     // Precompute names once per item:
-    //   downloadName -- sanitized friendly filename used for the actual save
-    //   displayName  -- human-readable form for the on-page panel
-    //   lang         -- parsed language code, used by the English-first sort
-    // Pass pageTitle as the word anchor so hyphenated speakers / compound
+    //   downloadName: sanitized friendly filename used for the actual save
+    //   displayName:  human readable form for the on-page panel
+    //   lang:         parsed language code, used by the English first sort
+    // Pass pageTitle as the word anchor so hyphenated speakers and compound
     // words (e.g. "well-known") both parse correctly.
     audioFiles.forEach(item => {
       const parsed = parseAudioFilename(item.filename, pageTitle);
@@ -982,7 +972,7 @@ function createUI(items) {
 
     // Display order: English entries first (Wiktionary's primary user base),
     // then everything else alphabetically by the displayed name. Within each
-    // group, displayName comparison gives a stable, intuitive ordering --
+    // group, displayName comparison gives a stable, intuitive ordering:
     // English dialects sort together, non-English languages sort by name.
     audioFiles.sort((a, b) => {
       const aEn = isEnglishLang(a.lang);
@@ -993,11 +983,11 @@ function createUI(items) {
 
     if (audioFiles.length) {
       createUI(audioFiles);
-      // Fire-and-forget prefetch: tell background to start pulling the audio
-      // bytes into its cache while the user reads the panel. By the time they
-      // click Download, the bytes are usually ready and both Original and
-      // Convert paths skip their network round-trip. Not awaited -- panel UX
-      // doesn't depend on prefetch finishing.
+      // Fire and forget prefetch: tell background to start pulling the
+      // audio bytes into its cache while the user reads the panel. By the
+      // time they click Download, the bytes are usually ready and both
+      // Original and Convert paths skip their network round trip. Not
+      // awaited; panel UX doesn't depend on prefetch finishing.
       safeSendMessage({
         type: 'PREFETCH_AUDIO',
         urls: audioFiles.map(item => item.url),

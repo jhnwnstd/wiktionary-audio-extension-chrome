@@ -1,5 +1,5 @@
 // @ts-check
-// Content script spec -- navigates to a Wiktionary URL (intercepted with a local
+// Content script spec. Navigates to a Wiktionary URL (intercepted with a local
 // HTML fixture) and asserts the panel renders given mocked MediaWiki API responses.
 // The content script uses a single Action API call (generator=images + prop=imageinfo)
 // with formatversion=2, so pages come back as an array.
@@ -17,7 +17,7 @@ const waterFixture = fs.readFileSync(
 const WATER_URL = 'https://en.wiktionary.org/wiki/water';
 
 /**
- * Build a canned Action API response (formatversion=2 -- pages is an array).
+ * Build a canned Action API response (formatversion=2, so pages is an array).
  * @param {Array<{title: string, url: string, mime?: string, mediatype?: string}>} entries
  */
 function actionApiResponse(entries) {
@@ -202,12 +202,12 @@ test.describe('content script audio discovery', () => {
   //   * Wait until background.js has the URL in its cache (via the
   //     globalThis._wadInspectAudioCache introspection hook).
   //   * Click Download.
-  //   * Assert the click did NOT trigger a second network fetch -- proving
+  //   * Assert the click did NOT trigger a second network fetch, proving
   //     the cached-bytes path was taken (Original mode uses a data: URL when
   //     bytes are cached, which doesn't hit the network).
   test('Original download uses prefetched cache (no second network fetch)', async () => {
     const AUDIO_URL = 'https://upload.wikimedia.org/x/En-us-water.ogg';
-    // OggS magic + a few padding bytes -- chrome.downloads doesn't validate
+    // OggS magic + a few padding bytes. chrome.downloads doesn't validate
     // the file contents, it just needs non-empty bytes to save.
     const FAKE_OGG = Buffer.from([
       0x4f, 0x67, 0x67, 0x53, 0x00, 0x02, 0x00, 0x00,
@@ -247,7 +247,7 @@ test.describe('content script audio discovery', () => {
     expect(audioFetchCount).toBe(1);
 
     // Click Download. With the cache populated, background uses a data: URL
-    // built from the cached bytes -- no second network fetch should occur.
+    // built from the cached bytes, so no second network fetch should occur.
     const downloadBtn = page.getByTestId('wad-download').first();
     await downloadBtn.click();
     await expect(downloadBtn).toContainText(/Downloaded/, { timeout: 15_000 });
@@ -259,7 +259,7 @@ test.describe('content script audio discovery', () => {
 
   // Regression: successful Download buttons stay green/Downloaded (no auto-
   // reset), and when EVERY individual button has been clicked successfully,
-  // the Download All button auto-flips to Downloaded too -- so the user can
+  // the Download All button auto-flips to Downloaded too, so the user can
   // tell at a glance which items they've already saved.
   test('Downloaded state persists; all-individual completes auto-flips Download All', async () => {
     const URL_A = 'https://upload.wikimedia.org/x/En-us-water.ogg';
@@ -297,8 +297,8 @@ test.describe('content script audio discovery', () => {
     await expect(btnB).not.toContainText(/Downloaded/);
     await expect(btnAll).not.toContainText(/Downloaded/);
 
-    // Click the second individual download. Now both items are downloaded
-    // -- Download All should auto-flip to Downloaded without being clicked.
+    // Click the second individual download. Now both items are downloaded,
+    // so Download All should auto-flip to Downloaded without being clicked.
     await btnB.click();
     await expect(btnB).toContainText(/Downloaded/, { timeout: 15_000 });
     await expect(btnAll).toContainText(/Downloaded/, { timeout: 5_000 });
@@ -347,7 +347,7 @@ test.describe('content script audio discovery', () => {
     await expect.poll(cacheHasUrl, { timeout: 5000 }).toBe(true);
   });
 
-  // Geometry sweep -- verifies the clamp()-based responsive sizing keeps the
+  // Geometry sweep. Verifies the clamp()-based responsive sizing keeps the
   // panel inside the viewport on the screen sizes from the test matrix. Uses
   // 20 mocked items so the body fills past its height cap and the assertions
   // actually exercise the clamp ceiling.
