@@ -28,18 +28,8 @@
   ],
   "host_permissions": [
     "*://*.wiktionary.org/*",
-    "https://*.wikimedia.org/*"
+    "https://upload.wikimedia.org/*"
   ],
-  "web_accessible_resources": [{
-    "resources": [
-      "vendor/ffmpeg/*",
-      "vendor/ffmpeg/core/*"
-    ],
-    "matches": [
-      "*://*.wiktionary.org/*",
-      "https://*.wikimedia.org/*"
-    ]
-  }],
   "cross_origin_embedder_policy": {
     "value": "require-corp"
   },

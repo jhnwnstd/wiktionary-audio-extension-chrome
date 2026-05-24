@@ -342,7 +342,7 @@ function parseAudioFilename(raw, knownWord = null) {
   // Strip query string / fragment defensively (real Wikimedia URLs don't carry
   // them, but tracking-rewriter proxies sometimes append things like
   // ?utm_source=...). Then decode and take the last path segment.
-  const decoded = decodeURIComponent(String(raw).split('?')[0].split('#')[0]);
+  const decoded = safeDecodeURIComponent(String(raw).split('?')[0].split('#')[0]);
   const base = decoded.split('/').pop() || decoded;
 
   const extMatch = base.match(/\.([a-z0-9]+)$/i);
@@ -524,7 +524,7 @@ function escapeHtml(s) {
 // `mw.config.get(...)` from the page isn't directly accessible). API base
 // is derived from `location.origin` so en/de/fr/... all just work.
 
-const pageTitle = decodeURIComponent(location.pathname.split('/wiki/')[1] ?? '');
+const pageTitle = safeDecodeURIComponent(location.pathname.split('/wiki/')[1] ?? '');
 const apiEndpoint = `${location.origin}/w/api.php`;
 
 // Non-audio-prefix MIMEs that should still be treated as audio. The broad
@@ -542,6 +542,37 @@ const AUDIO_MIMES = new Set([
 // in WebM, so a mislabeled .webm slipping through here would risk treating
 // a video file as audio.
 const AUDIO_EXT_RE = /\.(ogg|oga|opus|mp3|wav|flac|m4a|aac)$/i;
+
+// Allowlist of hostnames that may serve audio bytes to this extension.
+// Wikimedia serves all Wiktionary pronunciation audio from upload.wikimedia.org;
+// nothing else should ever appear in an API response. Anything outside the
+// allowlist is dropped before it reaches the panel, the prefetch cache,
+// chrome.downloads, or FFmpeg. Mirrored in background.js -- keep in sync.
+const AUDIO_HOST_ALLOWLIST = new Set(['upload.wikimedia.org']);
+
+/** @param {string} url */
+function isAllowedAudioUrl(url) {
+  if (typeof url !== 'string') return false;
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' && AUDIO_HOST_ALLOWLIST.has(u.hostname);
+  } catch { return false; }
+}
+
+// Mirror of background.js PER_FILE_MAX_BYTES. Used to drop oversize items
+// from the panel before they ever reach prefetch or download. 5 MB covers
+// every real pronunciation file; anything larger is an anomaly.
+const PER_FILE_MAX_BYTES = 5 * 1024 * 1024;
+
+// decodeURIComponent throws URIError on malformed `%XX` sequences. Wrapping
+// it once means a single bad URL or title can't disable the extension on
+// the whole page. Falls back to the raw string so we still produce
+// something usable downstream.
+/** @param {string} s */
+function safeDecodeURIComponent(s) {
+  try { return decodeURIComponent(s); }
+  catch { return String(s); }
+}
 
 function isAudioInfo(info) {
   if (!info) return false;
@@ -579,15 +610,22 @@ function audioItemsFromPages(pages) {
   const results = [];
   for (const page of pages) {
     const info = page?.imageinfo?.[0];
-    if (info?.url && isAudioInfo(info)) {
+    // Reject URLs outside the Wikimedia upload host. Defense in depth: if
+    // the MediaWiki API ever returns something unexpected, we drop it here
+    // and it never reaches the panel, prefetch, downloads, or FFmpeg.
+    if (info?.url && isAudioInfo(info) && isAllowedAudioUrl(info.url)) {
       // Strip any URL query/fragment before extracting the filename so
       // tracking junk (e.g. ?utm_source=... that Wikimedia attaches to some
       // imageinfo URLs) doesn't leak into display or download names.
+      // Drop oversized files reported by the API before they ever reach
+      // prefetch. Wikimedia's imageinfo size is authoritative; we only
+      // pay the network round trip for files within budget.
+      if (typeof info.size === 'number' && info.size > PER_FILE_MAX_BYTES) continue;
       const cleanTail = (info.url.split('/').pop() || 'audio').split('?')[0].split('#')[0];
       results.push({
         title: page.title,
         url: info.url,
-        filename: decodeURIComponent(cleanTail),
+        filename: safeDecodeURIComponent(cleanTail),
         mime: info.mime ?? null,
         size: typeof info.size === 'number' ? info.size : null,
         downloadName: '',
@@ -804,40 +842,64 @@ async function downloadAll(items, button) {
 const PLAY_SVG = `<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>`;
 const PAUSE_SVG = `<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z" fill="currentColor"/></svg>`;
 
-// One Audio instance at a time; switching items pauses the previous one.
-/** @type {{ audio: HTMLAudioElement, button: HTMLButtonElement } | null} */
-let activePreview = null;
+// Single shared Audio for the panel. Switching previews swaps src on this
+// one instance instead of constructing a new HTMLAudioElement each time;
+// that avoids piling up event listeners and lets the previous src/decode
+// be torn down explicitly via `pause(); src = ''; load()` rather than
+// waiting for GC to reclaim a paused-but-still-referenced element.
+const previewState = {
+  /** @type {HTMLAudioElement | null} */
+  audio: null,
+  /** @type {HTMLButtonElement | null} */
+  button: null,
+};
+
+function ensurePreviewAudio() {
+  if (previewState.audio) return previewState.audio;
+  const a = new Audio();
+  // Listeners attached once; they read from previewState so swapping the
+  // active button doesn't leave handlers pointing at stale buttons.
+  a.addEventListener('play', () => {
+    if (previewState.button) previewState.button.innerHTML = PAUSE_SVG;
+  });
+  a.addEventListener('pause', () => {
+    if (previewState.button) previewState.button.innerHTML = PLAY_SVG;
+  });
+  const reset = () => {
+    if (previewState.button) previewState.button.innerHTML = PLAY_SVG;
+    previewState.button = null;
+  };
+  a.addEventListener('ended', reset);
+  a.addEventListener('error', reset);
+  previewState.audio = a;
+  return a;
+}
 
 function previewAudio(item, button) {
-  // Toggle behavior if this button's audio is what's currently loaded.
-  if (activePreview && activePreview.button === button) {
-    if (activePreview.audio.paused) {
-      activePreview.audio.play().catch(() => {});
-    } else {
-      activePreview.audio.pause();
-    }
+  const audio = ensurePreviewAudio();
+
+  // Toggle if the user clicked the currently-loaded item.
+  if (previewState.button === button) {
+    if (audio.paused) audio.play().catch(() => {});
+    else audio.pause();
     return;
   }
 
-  // Stop any other preview and reset its button.
-  if (activePreview) {
-    activePreview.audio.pause();
-    activePreview.button.innerHTML = PLAY_SVG;
-  }
+  // Switching to a different item: tear down the previous src explicitly
+  // so the browser stops loading/decoding it instead of waiting for GC.
+  if (previewState.button) previewState.button.innerHTML = PLAY_SVG;
+  audio.pause();
+  audio.removeAttribute('src');
+  audio.load();
 
-  const audio = new Audio(item.url);
-  activePreview = { audio, button };
-  audio.addEventListener('play', () => { button.innerHTML = PAUSE_SVG; });
-  audio.addEventListener('pause', () => { button.innerHTML = PLAY_SVG; });
-  audio.addEventListener('ended', () => {
-    button.innerHTML = PLAY_SVG;
-    if (activePreview && activePreview.audio === audio) activePreview = null;
+  previewState.button = button;
+  audio.src = item.url;
+  audio.play().catch(() => {
+    if (previewState.button === button) {
+      button.innerHTML = PLAY_SVG;
+      previewState.button = null;
+    }
   });
-  audio.addEventListener('error', () => {
-    button.innerHTML = PLAY_SVG;
-    if (activePreview && activePreview.audio === audio) activePreview = null;
-  });
-  audio.play().catch(() => { button.innerHTML = PLAY_SVG; });
 }
 
 // Warm the TCP+TLS connection to upload.wikimedia.org while the user is
@@ -941,7 +1003,7 @@ function createUI(items) {
 
   minimizeBtn.onclick = () => {
     minimized = !minimized;
-    if (minimized && activePreview) activePreview.audio.pause();
+    if (minimized && previewState.audio) previewState.audio.pause();
     if (body) body.style.display = minimized ? 'none' : '';
     if (footer) footer.style.display = minimized ? 'none' : 'flex';
     minimizeBtn.textContent = minimized ? '+' : '\u2212';
