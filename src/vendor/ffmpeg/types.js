@@ -1,3 +1,4 @@
+// @ts-nocheck
 export var FFFSType;
 (function (FFFSType) {
     FFFSType["MEMFS"] = "MEMFS";

@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Generate an unique message ID.
  */

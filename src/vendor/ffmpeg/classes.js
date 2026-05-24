@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { FFMessageType } from "./const.js";
 import { getMessageID } from "./utils.js";
 import { ERROR_TERMINATED, ERROR_NOT_LOADED } from "./errors.js";

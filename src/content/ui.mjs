@@ -96,9 +96,8 @@ async function downloadFile(item, button) {
     showFeedback(button, t.downloaded, 'success');
     return true;
   } else if (okCount === 0) {
-    if (settled.find(s => s.status === 'rejected')) {
-      console.error('Download failed:', settled.find(s => s.status === 'rejected').reason);
-    }
+    const rejected = settled.find(s => s.status === 'rejected');
+    if (rejected) console.error('Download failed:', rejected.reason);
     showFeedback(button, t.failed, 'error');
     return false;
   } else {
@@ -328,16 +327,17 @@ export function createUI(items, pageTitle) {
     footer = document.createElement('div');
     footer.className = 'audio-panel-footer';
     footer.style.cssText = FOOTER_STYLE;
-    batchBtn = document.createElement('button');
-    batchBtn.setAttribute('data-testid', 'wad-download-all');
-    batchBtn.style.cssText = DOWNLOAD_ALL_STYLE;
-    batchBtn.textContent = t.downloadAllButton;
-    batchBtn.addEventListener('click', (e) => {
+    const btn = document.createElement('button');
+    btn.setAttribute('data-testid', 'wad-download-all');
+    btn.style.cssText = DOWNLOAD_ALL_STYLE;
+    btn.textContent = t.downloadAllButton;
+    btn.addEventListener('click', (e) => {
       if (!e.isTrusted) return;
-      downloadAll(items, batchBtn, pageTitle);
+      downloadAll(items, btn, pageTitle);
     });
-    footer.appendChild(batchBtn);
+    footer.appendChild(btn);
     panel.appendChild(footer);
+    batchBtn = btn;
   }
 
   // Minimize pauses preview. Minimize >2s sends PANEL_DISMISSED (evicts
