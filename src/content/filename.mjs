@@ -1,20 +1,15 @@
 // @ts-check
-// Filename parser, formatter, and human-readable display for Wiktionary
-// pronunciation audio.
-//
-// Wiktionary pronunciation files follow a few common patterns. We parse
-// them into structured fields so the panel and downloaded file get a
-// friendlier name like `english_australian_Georgian.ogg` instead of
-// `En-au-Georgian.ogg`.
+// Parse Wiktionary pronunciation filenames into structured fields, then
+// format friendly names (`english_australian_Georgian.ogg`) and display
+// strings (`English Australian 'Georgian' .ogg`). Unparseable input falls
+// back to the stem so we never lose a file.
 //
 // Patterns handled:
-//   En-au-Georgian.ogg              -> en, dialect=au,  word=Georgian
-//   De-Wasser.ogg                   -> de, word=Wasser
-//   LL-Q1860_(eng)-Speaker-water.wav -> eng, speaker=Speaker, word=water
-// Unparseable input falls back to the stem, so we never lose the file.
+//   En-au-Georgian.ogg                -> lang=en, dialect=au, word=Georgian
+//   De-Wasser.ogg                     -> lang=de, word=Wasser
+//   LL-Q1860_(eng)-Speaker-water.wav  -> lang=eng, speaker, word=water
 //
-// Pure module: no DOM, no chrome.*, no `location`. Node-importable for
-// unit tests.
+// Pure module: no DOM / chrome.* / location. Node-importable for tests.
 
 /**
  * @typedef {object} ParsedFilename
@@ -26,10 +21,9 @@
  * @property {string} ext
  */
 
-// Language coverage is delegated to the browser's Intl.DisplayNames, which
-// already knows ~150 ISO 639-1 codes. We only carry a tiny 639-3 -> 639-1 lift
-// table for the codes LinguaLibre uses in parens (`eng`, `deu`, etc.) since
-// Intl's language type doesn't always recognize 3-letter codes.
+// 639-3 -> 639-1 lift for LinguaLibre's parens-form codes (Intl doesn't
+// resolve 3-letter codes reliably). Language display itself comes from
+// Intl.DisplayNames.
 const ISO_639_3_TO_1 = {
   eng: 'en', deu: 'de', fra: 'fr', spa: 'es', ita: 'it',
   jpn: 'ja', zho: 'zh', cmn: 'zh', yue: 'zh', por: 'pt',
@@ -39,25 +33,16 @@ const ISO_639_3_TO_1 = {
   tha: 'th', vie: 'vi', ron: 'ro', hun: 'hu', ind: 'id',
 };
 
-// Overrides for codes that aren't standard ISO 639 (or that Intl resolves
-// poorly). These usually appear in Wiktionary as the file's language prefix
-// when the file is region-specific (Qc = Quebec French) or when the variety
-// has its own entry on Wiktionary even though it shares a parent language
-// (Jer = Jèrriais, a variety of Norman). Kept small. Only verified from
-// real data in the live sweep.
+// Non-ISO codes seen as Wiktionary file prefixes for variety-specific
+// recordings. Verified against the live sweep.
 const LANG_OVERRIDES = {
   qc: 'quebec-french',
   jer: 'jèrriais',
 };
 
-// Dialect adjectives. Intl returns nouns ("United States", "Australia") via
-// the region API, but filenames read more naturally with adjectives. This
-// table is intentionally short. Anything not listed falls through to the
-// region API, then to the raw code.
-//
-// Separator convention: `-` joins words within a single field value; `_`
-// joins different fields (handled in friendlyAudioFilename). So
-// `latin-american` (one field) but `spanish_latin-american_agua` (three).
+// Adjective form for filename use (Intl returns nouns: "United States" vs
+// "american"). Unlisted codes fall through to Intl's region name.
+// Separator convention: `-` within a field, `_` between fields.
 const DIALECT_ADJECTIVES = {
   us: 'american', uk: 'british', gb: 'british',
   au: 'australian', ca: 'canadian', ie: 'irish',
@@ -89,9 +74,8 @@ function slugifyName(s) {
     .replace(/^-+|-+$/g, '');
 }
 
-// Normalize a field value pulled directly from the source filename (word or
-// speaker). Source underscores and whitespace become `-` so they don't collide
-// with the `_` we use to join different fields.
+// Source `_` and whitespace -> `-` so within-field separators don't
+// collide with the `_` we use between fields.
 function normalizeFieldValue(v) {
   if (v === null || v === undefined) return v;
   return String(v).replace(/[_\s]+/g, '-');
@@ -121,9 +105,7 @@ function describeDialect(code) {
   if (Object.prototype.hasOwnProperty.call(DIALECT_ADJECTIVES, key)) {
     return DIALECT_ADJECTIVES[key];
   }
-  // Compound dialects like `us-inlandnorth` resolve piece-by-piece:
-  // us -> 'american', inlandnorth -> 'inland-north', joined as
-  // 'american-inland-north'. Falls back to the raw piece when no mapping.
+  // Compound: `us-inlandnorth` -> `american-inland-north`, piece by piece.
   if (key.includes('-') || key.includes('_')) {
     const parts = key.split(/[-_]/);
     const mapped = parts.map((p) => {
@@ -149,43 +131,35 @@ function describeDialect(code) {
   return normalizeFieldValue(key);
 }
 
-// The escape set below covers the metacharacters meaningful in regex
-// literals WITHOUT the `u` flag. If any caller ever constructs a Unicode-
-// mode regex (RegExp(..., 'u') or /.../u), this set must also escape `-`
-// and `/` to be safe inside character classes, and the function needs to
-// handle Unicode property escapes that the non-Unicode parser tolerates.
-// Today no consumer uses the `u` flag.
+// Escape set is sufficient for non-`u`-flag regexes. If any consumer ever
+// adds the `u` flag, also escape `-` and `/` (significant in `u` mode
+// character classes).
 /** @param {string} s */
 function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// `knownWord` (the page title) anchors the trailing word segment when set,
+// which disambiguates hyphenated speakers (LL-Q1860-Speaker-Name-water)
+// from hyphenated words (well-known) that look the same structurally.
 /**
- * Parse a Wiktionary audio filename into structured fields. When `knownWord`
- * (the page title) is supplied, the parser anchors the trailing `word`
- * segment to it, disambiguating hyphenated speakers from hyphenated words
- * like "well-known".
- *
- * @param {string} raw  filename or URL; query string is stripped defensively
+ * @param {string} raw  filename or URL; query/fragment stripped
  * @param {string|null} [knownWord]
  * @returns {ParsedFilename}
  */
 export function parseAudioFilename(raw, knownWord = null) {
   if (!raw) return { lang: null, dialect: null, speaker: null, word: 'audio', extra: null, ext: '' };
 
-  // Strip query string / fragment defensively (real Wikimedia URLs don't carry
-  // them, but tracking-rewriter proxies sometimes append things like
-  // ?utm_source=...). Then decode and take the last path segment.
   let decoded = String(raw).split('?')[0].split('#')[0];
-  try { decoded = decodeURIComponent(decoded); } catch { /* malformed pct */ }
+  try { decoded = decodeURIComponent(decoded); } catch { /* malformed %XX */ }
   const base = decoded.split('/').pop() || decoded;
 
   const extMatch = base.match(/\.([a-z0-9]+)$/i);
   const ext = extMatch ? extMatch[1].toLowerCase() : '';
   const stem = ext ? base.slice(0, base.length - ext.length - 1) : base;
 
-  // Build LL regexes once. Two flavors per pattern: anchored (uses knownWord
-  // as the trailing word) and unanchored (greedy speaker, last token as word).
+  // Each pattern has two flavors: anchored (uses knownWord as trailing
+  // word) and unanchored (greedy speaker, last token as word).
   const wordAnchor = knownWord ? escapeRegex(knownWord) : null;
 
   // LinguaLibre parens-form: LL-Q<num>_(<lang3>)-<speaker>-<word>
@@ -198,9 +172,8 @@ export function parseAudioFilename(raw, knownWord = null) {
     return { lang: ll1[1].toLowerCase(), dialect: null, speaker: ll1[2], word: ll1[3], extra: null, ext };
   }
 
-  // LinguaLibre hyphenated Q-form: LL-Q<num>-<speaker>-<word>
-  // (Q-number references a Wikidata language; we leave lang null rather than
-  // bake in a Q-ID -> ISO code map.)
+  // LL-Q<num>-<speaker>-<word>; Q-number is a Wikidata language ref we
+  // don't resolve, so lang stays null here.
   if (wordAnchor) {
     const m = stem.match(new RegExp(`^LL-Q\\d+-(.+)-(${wordAnchor})$`));
     if (m) return { lang: null, dialect: null, speaker: m[1], word: m[2], extra: null, ext };
@@ -220,28 +193,21 @@ export function parseAudioFilename(raw, knownWord = null) {
     return { lang: ll3[2].toLowerCase(), dialect: null, speaker: ll3[1], word: ll3[3], extra: null, ext };
   }
 
-  // <Lang>-<dialect>-<word>. Two flavors, in priority order:
-  //
-  //   (a) Anchored: word must equal pageTitle (or pageTitle with a short
-  //       variant suffix like `-2`, `-fast`). This lets dialect be arbitrarily
-  //       long, which is what surfaces compound regional tags like
-  //       `us-inlandnorth` (American Inland North) without breaking the more
-  //       common `En-us-hello-4` case (variant index).
-  //
-  //   (b) Unanchored: dialect capped at 7 chars total. Handles the simple
-  //       case (En-au-Georgian, Es-am_lat-agua) without context.
+  // <Lang>-<dialect>-<word>, with anchored vs unanchored flavors. The
+  // anchored form lets dialect be arbitrarily long (catches compound
+  // tags like `us-inlandnorth`) without breaking variant-index cases
+  // like `En-us-hello-4`.
   if (wordAnchor) {
-    // (a) `pageTitle` or `pageTitle-<short-suffix>` (variant recordings).
+    // `pageTitle` or `pageTitle-<short-suffix>` (variant recordings).
     const shortTail = `(?:${wordAnchor}|${wordAnchor}-[a-z0-9]{1,12})`;
     const reShort = new RegExp(`^([A-Z][a-z]{0,2})-([a-z][a-z_-]{0,28}[a-z])-(${shortTail})$`);
     const m1 = stem.match(reShort);
     if (m1) {
       return { lang: m1[1].toLowerCase(), dialect: m1[2], speaker: null, word: m1[3], extra: null, ext };
     }
-    // (b) `pageTitle-<long-hyphenated-suffix>` (phonetic feature, e.g.
-    //     En-us-water-cot-caught-merger.ogg). The hyphenated tail is captured
-    //     as `extra` so display can show it as a qualifier like
-    //     `English American 'water' (cot caught merger) .ogg`.
+    // `pageTitle-<long-hyphenated-suffix>` (phonetic features like
+    // En-us-water-cot-caught-merger). The tail is captured as `extra`
+    // so display can render it parenthetical.
     const reExtra = new RegExp(`^([A-Z][a-z]{0,2})-([a-z][a-z_-]{0,28}[a-z])-(${wordAnchor})-(.+)$`);
     const m2 = stem.match(reExtra);
     if (m2) {
@@ -269,12 +235,8 @@ export function parseAudioFilename(raw, knownWord = null) {
   return { lang: null, dialect: null, speaker: null, word: stem, extra: null, ext };
 }
 
-/**
- * Compose the sanitized filename used for the actual chrome.downloads save.
- * `_` joins different fields; within-field separators are already `-`.
- * @param {ParsedFilename} parsed
- * @returns {string}
- */
+// Filename for chrome.downloads. `_` between fields, `-` within fields.
+/** @param {ParsedFilename} parsed @returns {string} */
 export function friendlyAudioFilename(parsed) {
   const parts = [];
   const lang = describeLanguage(parsed.lang);
@@ -282,36 +244,23 @@ export function friendlyAudioFilename(parsed) {
   const dialect = describeDialect(parsed.dialect);
   if (dialect) parts.push(dialect);
   parts.push(normalizeFieldValue(parsed.word));
-  // Phonetic qualifier (e.g. "cot-caught-merger") goes right after the word
-  // so files with the same word but different features remain distinguishable.
   if (parsed.extra) parts.push(normalizeFieldValue(parsed.extra));
-  // Speaker disambiguator (LinguaLibre) so multiple speakers don't collide.
   if (parsed.speaker) parts.push(normalizeFieldValue(parsed.speaker));
-  // `_` joins different fields; within-field separators are already `-`.
   const stem = parts.join('_');
   return parsed.ext ? `${stem}.${parsed.ext}` : stem;
 }
 
-// Human-readable display string for the on-page panel. Same parsed fields as
-// the download name, but rendered for humans: title-cased language and
-// dialect, word in single quotes, optional speaker, extension separated.
+// Human display for the panel. Same fields, prose layout. Falls back to
+// the source filename verbatim when nothing parsed.
 //   En-au-friendo.ogg                  -> English Australian 'friendo' .ogg
 //   De-Wasser.ogg                      -> German 'Wasser' .ogg
 //   LL-Q1860_(eng)-Stebbington-water   -> English 'water' by Stebbington .wav
-//   Unparseable input                  -> original filename, verbatim
 function titleCasePart(s) {
   if (!s) return s;
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-/**
- * Render a parsed filename as the human-readable string shown in the panel.
- * Unparseable inputs (no lang/dialect/speaker) fall back to the source
- * filename verbatim so the user can still recognize what they're looking at.
- * @param {ParsedFilename} parsed
- * @param {string} originalFilename
- * @returns {string}
- */
+/** @param {ParsedFilename} parsed @param {string} originalFilename */
 export function humanReadableName(parsed, originalFilename) {
   if (!parsed.lang && !parsed.dialect && !parsed.speaker) {
     return originalFilename;
@@ -327,8 +276,7 @@ export function humanReadableName(parsed, originalFilename) {
   }
   parts.push(`'${String(parsed.word).replace(/_/g, ' ')}'`);
   if (parsed.extra) {
-    // Phonetic qualifier shown in parens, with hyphens converted to spaces
-    // for readability: "cot-caught-merger" -> "(cot caught merger)".
+    // "cot-caught-merger" -> "(cot caught merger)".
     parts.push(`(${String(parsed.extra).replace(/[-_]/g, ' ')})`);
   }
   if (parsed.speaker) {

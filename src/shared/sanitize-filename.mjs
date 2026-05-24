@@ -1,16 +1,13 @@
-// Cross-platform filename sanitizer covering the union of Windows, macOS,
-// and Linux filesystem restrictions. Preserves Unicode (e.g. 水, café) but
-// enforces a 255 byte UTF-8 cap, since most real filesystems use byte
-// length not codepoint length. A 100 character Chinese filename is ~300
-// bytes on disk.
+// Filename sanitizer covering Win/Mac/Linux restrictions. Preserves
+// Unicode, enforces a 255-byte UTF-8 cap (most filesystems use bytes,
+// not codepoints), and falls back to "audio" if the result would be empty.
 //
-// Rules enforced:
-//   * forbidden chars: < > : " / \ | ? * and control chars 0x00-0x1F
-//   * Windows reserved basenames: CON, PRN, AUX, NUL, COM1-9, LPT1-9
-//   * Windows forbids trailing space or period
-//   * leading dots stripped (avoids Unix hidden-file surprise)
-//   * 255 byte UTF-8 cap, preserving extension when possible
-//   * never empty: falls back to "audio"
+// Rules:
+//   forbidden chars: < > : " / \ | ? * and control chars 0x00-0x1F
+//   Windows reserved basenames (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+//   no trailing space/period (Windows)
+//   no leading dots (Unix hidden-file surprise)
+//   255-byte UTF-8 cap, extension preserved when possible
 
 const WINDOWS_RESERVED_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
 const FORBIDDEN_CHARS_RE = /[<>:"/\\|?*\x00-\x1f]/g;
@@ -23,12 +20,9 @@ export function utf8ByteLength(s) {
 }
 
 /**
- * Truncate `s` to at most `maxBytes` UTF-8 bytes without splitting a
- * multi-byte code point. Encode once, then walk back from the limit to
- * the nearest code-point boundary (a byte that is not a UTF-8
- * continuation byte: continuation bytes have the bit pattern 10xxxxxx).
- * O(n) instead of the previous O(n^2) per-char slice-and-reencode loop.
- *
+ * Truncate to `maxBytes` UTF-8 bytes without splitting a code point.
+ * Encode once, walk back past continuation bytes (10xxxxxx) to a
+ * boundary, decode the prefix. O(n).
  * @param {string} s
  * @param {number} maxBytes
  * @returns {string}
@@ -41,12 +35,7 @@ export function truncateToBytes(s, maxBytes) {
   return UTF8_DECODER.decode(bytes.subarray(0, cut));
 }
 
-/**
- * Sanitize a filename to be safe across Windows, macOS, and Linux file
- * systems while preserving Unicode characters.
- * @param {unknown} filename
- * @returns {string}
- */
+/** @param {unknown} filename @returns {string} */
 export function sanitizeFilename(filename) {
   if (typeof filename !== 'string' || !filename) return 'audio';
 

@@ -1,8 +1,7 @@
 // @ts-check
-// On-page audio panel: rendering, preview controls, per-row downloads, and
-// the Download All flow. Dynamic-imported from the content script entry
-// after discovery returns items, so this whole module's parse cost is
-// skipped on pages with no pronunciation audio.
+// On-page panel: rendering, preview, per-row + batch downloads. Dynamic-
+// imported only after discovery returns items, so pages without audio skip
+// the parse cost.
 
 import { t } from '../shared/i18n.mjs';
 import { batchFolderName } from '../shared/paths.mjs';
@@ -27,17 +26,14 @@ async function sendDownload(item, mode, folder) {
   }, { timeoutMs });
 }
 
-// Feedback states. `progress` is an open ended state (no auto-reset)
-// shown while async work is in flight. `success` also persists so the
-// user can see at a glance which items they've already downloaded; only
-// `error` and `partial` auto-reset so the button stays clickable for a
-// retry. State is per panel render: a page refresh wipes everything
-// (no persistence layer).
+// Button feedback. progress + success persist (re-download stays clickable
+// on success); error + partial auto-clear after FEEDBACK_RESET_MS. Lifetime
+// is per panel render; page refresh wipes everything.
 const FEEDBACK_COLORS = {
-  progress: '#fbbc04',  // amber: "working"
-  success:  '#34a853',  // green
-  error:    '#ea4335',  // red
-  partial:  '#fb8c00',  // orange: "some files saved, some failed"
+  progress: '#fbbc04',
+  success:  '#34a853',
+  error:    '#ea4335',
+  partial:  '#fb8c00',
 };
 const FEEDBACK_IDLE_BG = '#1a73e8';
 const FEEDBACK_RESET_MS = 2000;
@@ -48,13 +44,8 @@ function showFeedback(button, message, kind = 'success') {
 
   button.textContent = message;
   button.style.background = FEEDBACK_COLORS[kind] || FEEDBACK_COLORS.success;
-  // success keeps the button clickable so the user can re-download. progress
-  // disables while work is in flight; error/partial disable briefly then
-  // auto-reset back to the idle state.
   button.disabled = kind !== 'success';
 
-  // progress and success stay until something else replaces them. Only
-  // error and partial auto-clear.
   if (kind === 'progress' || kind === 'success') return;
 
   button._feedbackTimer = setTimeout(() => {
@@ -66,13 +57,8 @@ function showFeedback(button, message, kind = 'success') {
   }, FEEDBACK_RESET_MS);
 }
 
-// Mode is read on every download click; without local caching that's an
-// async chrome.storage.sync round-trip on the hot path (~5ms in practice
-// but more importantly an awaited boundary). The factory in
-// shared/mode-cache.mjs owns the cache state (testable in isolation);
-// here we inject chrome.* as the storage dep. The try/catch around the
-// onChanged listener handles the case where the extension context isn't
-// fully ready yet (the first getMode() call will then populate normally).
+// Cache the mode locally so download clicks don't await storage.sync.
+// State lives in createModeCache; here we inject the chrome.* deps.
 const _getMode = createModeCache({
   get: (defaults) => chrome.storage.sync.get(defaults),
   onChanged: (cb) => {
@@ -89,17 +75,13 @@ async function getMode() {
   return _getMode();
 }
 
-// Map UI mode to one or more concrete send-download modes. Mode 'both' fans
-// out to original + convert in parallel.
+// 'both' fans out to original + convert in parallel.
 function subModesFor(mode) {
   return mode === 'both' ? ['original', 'convert'] : [mode];
 }
 
-// Promise.allSettled is used everywhere so we get per mode results without
-// a thrown exception triggering a silent fallback (which previously
-// confused users: a file would still land while the button said "Failed").
-// Returns true iff every sub-mode succeeded; caller uses this to drive
-// per-panel "all downloaded" bookkeeping.
+// Returns true iff every sub-mode succeeded; caller uses this for the
+// per-panel "all downloaded" auto-flip.
 async function downloadFile(item, button) {
   const mode = await getMode();
   if (!mode) return false;
@@ -157,16 +139,12 @@ async function downloadAll(items, button, pageTitle) {
   }
 }
 
-// SVG glyphs for preview controls. No emoji: vector icons render cleanly
-// at any size and inherit page color via currentColor.
 const PLAY_SVG = `<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>`;
 const PAUSE_SVG = `<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z" fill="currentColor"/></svg>`;
 
-// Single shared Audio for the panel. Switching previews swaps src on this
-// one instance instead of constructing a new HTMLAudioElement each time;
-// that avoids piling up event listeners and lets the previous src/decode
-// be torn down explicitly via `pause(); src = ''; load()` rather than
-// waiting for GC to reclaim a paused-but-still-referenced element.
+// One shared Audio element: switching previews swaps src, so we don't pile
+// up listeners across N elements and can explicitly tear down the previous
+// src instead of waiting for GC.
 const previewState = {
   /** @type {HTMLAudioElement | null} */
   audio: null,
@@ -177,8 +155,7 @@ const previewState = {
 function ensurePreviewAudio() {
   if (previewState.audio) return previewState.audio;
   const a = new Audio();
-  // Listeners attached once; they read from previewState so swapping the
-  // active button doesn't leave handlers pointing at stale buttons.
+  // Listeners read from previewState so the active button can swap freely.
   a.addEventListener('play', () => {
     if (previewState.button) previewState.button.innerHTML = PAUSE_SVG;
   });
@@ -198,15 +175,14 @@ function ensurePreviewAudio() {
 function previewAudio(item, button) {
   const audio = ensurePreviewAudio();
 
-  // Toggle if the user clicked the currently-loaded item.
+  // Same button = toggle play/pause.
   if (previewState.button === button) {
     if (audio.paused) audio.play().catch(() => {});
     else audio.pause();
     return;
   }
 
-  // Switching to a different item: tear down the previous src explicitly
-  // so the browser stops loading/decoding it instead of waiting for GC.
+  // Different button: tear down previous src so the browser stops decoding.
   if (previewState.button) previewState.button.innerHTML = PLAY_SVG;
   audio.pause();
   audio.removeAttribute('src');
@@ -222,9 +198,8 @@ function previewAudio(item, button) {
   });
 }
 
-// Warm the TCP+TLS connection to upload.wikimedia.org while the user is
-// looking at the panel, so the eventual audio fetch (preview, download, or
-// offscreen convert) skips the handshake. Idempotent via the data attribute.
+// Warm TCP+TLS to upload.wikimedia.org so the first real fetch skips the
+// handshake. Idempotent via the data attribute.
 function preconnectToUploadWikimedia() {
   if (document.querySelector('link[data-wad-preconnect="upload-wikimedia"]')) return;
   const link = document.createElement('link');
@@ -235,8 +210,8 @@ function preconnectToUploadWikimedia() {
   document.head.appendChild(link);
 }
 
-// Inline style strings, defined once. Inside a closed shadow root none of
-// these need ID prefixing, and page CSS can't reach them anyway.
+// Inline styles, defined once. Inside the shadow root page CSS can't reach
+// them, so no ID prefixing.
 const PANEL_STYLE = 'background:#fff;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25);width:clamp(260px, 22vw, 380px);max-width:100%;max-height:100%;display:flex;flex-direction:column;overflow:hidden';
 const HEADER_STYLE = 'padding:10px 12px;border-bottom:1px solid #eee;font-weight:600;display:flex;justify-content:space-between;align-items:center;flex-shrink:0';
 const MINIMIZE_STYLE = 'border:0;background:none;color:#666;cursor:pointer;font-size:16px;padding:4px;border-radius:4px';
@@ -269,15 +244,10 @@ export function createUI(items, pageTitle) {
   if (!items.length) return;
   preconnectToUploadWikimedia();
 
-  // The host lives in light DOM (page can see it) but its contents render
-  // inside an open shadow root for CSS + DOM-mutation encapsulation. The
-  // load-bearing security primitive is closure-based item binding: every
-  // button captures its own AudioItem, so there is no DOM attribute a
-  // page could rewrite to retarget a real user click to a different
-  // download. event.isTrusted on every handler additionally blocks any
-  // script-dispatched click. Open mode is used so Playwright (and other
-  // tooling) can introspect for tests; the security guarantee does not
-  // depend on shadow opacity.
+  // Shadow root (open, for test tooling reach) + closure-bound item per
+  // button is the security primitive: no DOM attribute a page could rewrite
+  // can retarget a click. event.isTrusted on each handler blocks synthetic
+  // clicks too.
   const host = document.createElement('div');
   host.style.cssText = HOST_STYLE;
   const root = host.attachShadow({ mode: 'open' });
@@ -303,10 +273,9 @@ export function createUI(items, pageTitle) {
   body.className = 'audio-panel-body';
   body.style.cssText = BODY_STYLE;
 
-  // Per-panel completion tracking. When every individual Download button
-  // has succeeded the Download All button auto-flips to "Downloaded" too,
-  // even if the user never clicked it. We key the Set on the AudioItem
-  // object so there is no integer index in play that a page could spoof.
+  // When every per-item download succeeds, the Download All button auto-
+  // flips to "Downloaded". Keyed on the AudioItem object so there's no
+  // integer index a page could spoof.
   /** @type {Set<unknown>} */
   const downloadedItems = new Set();
   /** @type {HTMLButtonElement | null} */
@@ -324,12 +293,7 @@ export function createUI(items, pageTitle) {
     previewBtn.title = 'Preview';
     previewBtn.innerHTML = PLAY_SVG;
     previewBtn.addEventListener('click', (e) => {
-      // event.isTrusted is false for any script-generated event. Combined
-      // with the closed shadow root (page can't dispatch directly onto
-      // shadow content from outside, and our closure-captured `item`
-      // makes attribute-driven retargeting impossible), this means only
-      // real user clicks can drive privileged audio playback.
-      if (!e.isTrusted) return;
+      if (!e.isTrusted) return;  // reject synthetic clicks
       previewAudio(item, previewBtn);
     });
 
@@ -344,9 +308,6 @@ export function createUI(items, pageTitle) {
     dlBtn.textContent = t.downloadButton;
     dlBtn.addEventListener('click', (e) => {
       if (!e.isTrusted) return;
-      // `item` is closure captured per row, so even a tampered DOM
-      // (which would require breaking shadow encapsulation) can't reroute
-      // this click to a different audio file.
       downloadFile(item, dlBtn).then((ok) => {
         if (!ok) return;
         downloadedItems.add(item);
@@ -379,10 +340,8 @@ export function createUI(items, pageTitle) {
     panel.appendChild(footer);
   }
 
-  // Minimize/restore pauses any active preview when collapsing. Also
-  // gates prefetch lifecycle: minimizing for >2s tells the background to
-  // evict this page's bytes (user has signaled they won't use the panel);
-  // re-opening after that triggers a fresh prefetch.
+  // Minimize pauses preview. Minimize >2s sends PANEL_DISMISSED (evicts
+  // SW caches for these URLs). Restore after dismiss sends PREFETCH_AUDIO.
   let minimized = false;
   const itemUrls = items.map(i => i.url);
   const prefetchItems = items.map(i => ({ url: i.url, downloadName: i.downloadName }));

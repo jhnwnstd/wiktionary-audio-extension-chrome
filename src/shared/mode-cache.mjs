@@ -1,18 +1,11 @@
-// Factory for the per-tab mode cache. Dependency-injected so the same
-// logic can run against `chrome.storage.sync` in the browser and against
-// a fake in Node tests. The contract under test:
-//
-//   1. First call resolves by awaiting the injected `get` and caches the
-//      result, so subsequent calls return synchronously.
-//   2. A concurrent second call during the first's await shares the same
-//      Promise (no double-fetch).
-//   3. A transient `get` rejection returns 'original' for the failing
-//      call but does NOT populate the cache; the next call retries.
-//   4. The `onChanged` listener invalidates the cache when the user
-//      changes their mode in the popup.
-//   5. The returned value is always one of 'original' | 'convert' | 'both';
-//      any other value coming back from storage gets coerced to 'original'.
-//
+// Per-tab mode cache, DI'd for testability. Contract:
+//   1. First call awaits get(); subsequent calls return cached value.
+//   2. Concurrent calls share the in-flight Promise (no double-fetch).
+//   3. Transient get() rejection returns 'original' but does NOT cache;
+//      next call retries.
+//   4. onChanged invalidates the cache when popup writes a new mode.
+//   5. Return value is always 'original' | 'convert' | 'both'; unknown
+//      storage values coerce to 'original'.
 /** @typedef {'original' | 'convert' | 'both'} Mode */
 
 /**
@@ -48,10 +41,7 @@ export function createModeCache({ get, onChanged = null }) {
         cachedMode = m;
         return m;
       } catch {
-        // Default for this call so the download stays usable, but do NOT
-        // populate cachedMode. Otherwise one transient failure would pin
-        // the user to Original for the entire page session even after
-        // their real preference came back online.
+        // Default for THIS call; do not poison cachedMode.
         return 'original';
       }
     })();

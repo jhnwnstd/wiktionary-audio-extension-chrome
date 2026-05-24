@@ -1,11 +1,6 @@
-// UI string table. One entry per supported Wiktionary edition. Every locale
-// must declare every key; the unit test for `i18n` cross-checks that the
-// `en` keys exist in every other locale so a new key can't silently fall
-// back to undefined in the UI.
-//
-// Loaded by the content-script bundle (browser) and by Node unit tests.
-// All accessors are pure functions of the supplied hostname so this module
-// has no runtime dependency on `location`, `chrome`, or DOM.
+// UI strings per Wiktionary edition. Unit test asserts every locale has
+// the same key set as `en` so a new key can't silently fall back to
+// undefined in the UI. Pure module; accessors take hostname.
 
 export const i18n = {
   en: {

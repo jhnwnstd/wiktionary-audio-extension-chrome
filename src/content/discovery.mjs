@@ -1,11 +1,8 @@
 // @ts-check
-// Wiktionary audio discovery via the MediaWiki Action API.
-//
-// Single discovery path: generator=images + prop=imageinfo. One roundtrip
-// per page (more for long entries via continuation). Filters by
-// `mediatype=AUDIO` from imageinfo, falling back to MIME and then the
-// filename extension. Works across all Wiktionary editions because it
-// bypasses per-edition template/DOM differences.
+// Audio discovery via MediaWiki Action API (generator=images +
+// prop=imageinfo). One roundtrip per page, plus continuation. Filters by
+// mediatype=AUDIO, falling back to MIME then file extension. Works on
+// every Wiktionary edition because it bypasses per-edition DOM.
 
 import { PER_FILE_MAX_BYTES } from '../shared/limits.mjs';
 import { isAllowedAudioUrl } from '../shared/audio-allowlist.mjs';
@@ -23,26 +20,18 @@ import { isAudioInfo, validImageInfo, urlTail } from '../shared/audio-info.mjs';
  * @property {string|null} lang
  */
 
-// decodeURIComponent throws URIError on malformed `%XX` sequences. Wrapping
-// it once means a single bad URL or title can't disable the extension on
-// the whole page. Falls back to the raw string so we still produce
-// something usable downstream.
+// Bare decodeURIComponent throws on malformed `%XX`; the fallback keeps
+// a single bad URL from blowing up the whole page.
 /** @param {string} s */
 export function safeDecodeURIComponent(s) {
   try { return decodeURIComponent(s); }
   catch { return String(s); }
 }
 
+// Filter `pages` to audio entries. Items are built with the full field set
+// (downloadName/displayName/lang as defaults) so V8's hidden class stays
+// stable when the caller fills them in.
 /**
- * Filter an Action API `pages` array down to audio entries with the fields
- * we care about. The shape validator runs at the boundary so downstream
- * code operates on a known-shape AudioItem.
- *
- * Every result is built with the full AudioItem field set (downloadName,
- * displayName, lang as their empty/null defaults) so the V8 hidden class
- * stays stable when the entry script fills them in. Adding properties
- * later would force a second shape transition per item.
- *
  * @param {any[]} pages
  * @returns {AudioItem[]}
  */
@@ -54,9 +43,7 @@ export function audioItemsFromPages(pages) {
     if (!validImageInfo(info)) continue;
     if (!isAudioInfo(info)) continue;
     if (!isAllowedAudioUrl(info.url)) continue;
-    // Drop oversized files reported by the API before they ever reach
-    // prefetch. Wikimedia's imageinfo size is authoritative; we only pay
-    // the network round trip for files within budget.
+    // Authoritative size from imageinfo: drop oversize before prefetch.
     if (typeof info.size === 'number' && info.size > PER_FILE_MAX_BYTES) continue;
     results.push({
       title: page.title,
@@ -76,11 +63,8 @@ export function audioItemsFromPages(pages) {
 async function fetchJson(url) {
   const response = await fetch(url, { credentials: 'omit' });
   if (!response.ok) return null;
-  // response.json() rejects on a malformed body. Without this catch, a
-  // single bad continuation pass would propagate out of discoverAudio's
-  // 5-pass loop and abort the entire panel for the page. Treat parse
-  // failure like a transport failure: return null and let the caller
-  // continue with whatever it already has.
+  // Treat a JSON parse failure as a transport failure so one bad
+  // continuation pass doesn't abort the whole panel.
   try {
     return await response.json();
   } catch {
@@ -100,20 +84,12 @@ export function isEnglishLang(lang) {
   return code === 'en' || code === 'eng';
 }
 
-// Only the continuation keys our specific query (generator=images +
-// prop=imageinfo) can legitimately produce. The MediaWiki Action API uses
-// `continue` as an indicator string plus per-module keys; for us the only
-// module emitting a continuation is the `images` generator (`gimcontinue`).
-// Anything else returned by the API is silently dropped instead of being
-// spread into URLSearchParams.
+// Allowlisted continuation keys for our query (generator=images +
+// prop=imageinfo). Anything else MediaWiki returns is silently dropped.
 const CONTINUE_KEYS = new Set(['continue', 'gimcontinue']);
 
-/**
- * True iff `c` is a non-null plain object (not an array, not a primitive,
- * no exotic prototype). Defensive against an API response that returns
- * `continue` as a string, array, or null.
- * @param {unknown} c
- */
+/** Plain-object check; rejects arrays, primitives, exotic prototypes.
+ * @param {unknown} c */
 export function isPlainContinue(c) {
   if (c === null || typeof c !== 'object') return false;
   if (Array.isArray(c)) return false;
@@ -121,13 +97,7 @@ export function isPlainContinue(c) {
   return proto === Object.prototype || proto === null;
 }
 
-/**
- * Copy allowed continuation parameters from `cont` into `params`. Keys not
- * in the allowlist are ignored; values must be strings (MediaWiki always
- * returns string continuation tokens).
- * @param {URLSearchParams} params
- * @param {Record<string, unknown>} cont
- */
+/** @param {URLSearchParams} params @param {Record<string, unknown>} cont */
 export function applyContinuation(params, cont) {
   for (const k of CONTINUE_KEYS) {
     const v = cont[k];
@@ -137,8 +107,10 @@ export function applyContinuation(params, cont) {
 
 /**
  * Discover all audio files attached to a page via Action API. Handles
- * generator continuation so long entries (e.g. fr/eau with 33+ items)
- * aren't truncated.
+ * generator continuation up to MAX_PASSES passes (real entries like
+ * fr/eau with 33+ items finish in one or two passes). Truncation past
+ * the pass cap is unlikely in practice and surfaces as a console.warn
+ * if it ever happens.
  *
  * @param {string} apiEndpoint  base `https://*.wiktionary.org/w/api.php`
  * @param {string} title  page title (e.g. `water`, `Wasser`, `水`)
@@ -160,17 +132,18 @@ export async function discoverAudio(apiEndpoint, title) {
   const results = [];
   const seen = new Set();
   let cont = null;
-  // Hard cap on continuation passes to avoid pathological loops.
-  for (let pass = 0; pass < 5; pass++) {
+  // 5 passes × gimlimit=max(500) = 2500-item ceiling, well above any real
+  // Wiktionary entry. Truncation past the ceiling is surfaced via warn().
+  const MAX_PASSES = 5;
+  let lastPassHadContinuation = false;
+  for (let pass = 0; pass < MAX_PASSES; pass++) {
     const params = new URLSearchParams(baseParams);
     if (cont) applyContinuation(params, cont);
     const data = await fetchJson(`${apiEndpoint}?${params}`);
     if (!data) break;
 
-    // Dedupe by canonical URL: different File: titles can resolve to the
-    // same upload.wikimedia.org asset (redirects, file aliases). Deduping
-    // by title would still surface those as separate panel rows and trigger
-    // redundant prefetches.
+    // Dedupe by canonical URL: aliased File: titles can resolve to the
+    // same asset, and we don't want duplicate rows or duplicate prefetches.
     for (const item of audioItemsFromPages(data.query?.pages)) {
       if (seen.has(item.url)) continue;
       seen.add(item.url);
@@ -179,6 +152,12 @@ export async function discoverAudio(apiEndpoint, title) {
 
     cont = isPlainContinue(data.continue) ? data.continue : null;
     if (!cont) break;
+    lastPassHadContinuation = pass === MAX_PASSES - 1;
+  }
+  if (lastPassHadContinuation) {
+    console.warn(
+      `[Wiktionary Audio] Discovery truncated at ${MAX_PASSES} continuation passes; ${results.length} items surfaced, more remain on the page.`,
+    );
   }
   return results;
 }

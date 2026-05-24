@@ -1,19 +1,11 @@
 /**
- * Insertion-order LRU bounded by total bytes (not item count). The single
- * invariant being structurally enforced -- `bytes()` equals the sum of all
- * entry byte costs -- used to be five hand-coordinated mutations across
- * peek/add/dismiss; now no path outside this class can desync the counter.
+ * Insertion-order LRU bounded by total bytes. Enforced invariant:
+ * `bytes()` == sum of entry byte costs. Internal mutation only, so no
+ * external code path can desync the counter.
  *
- * Eviction calls the optional `onEvict(value)` callback AFTER mutating
- * internal state, so a throwing callback can't leave `#bytes` desynced
- * from `#map`. A throwing onEvict propagates the error to the caller of
- * `set` / `delete`; the cache's own invariants stay intact. The
- * transcoded-cache instance uses this to revoke its blob URL on eviction;
- * a raw-bytes instance passes no callback (ArrayBuffers are GC'd when
- * references drop).
- *
- * Entries are wrapped internally as {v, b} so a single API works for both
- * ArrayBuffer payloads and richer structs.
+ * `onEvict(value)` is called AFTER internal state mutates, so a throwing
+ * callback can't leave `#bytes` and `#map` inconsistent — the error
+ * propagates to set/delete; the cache stays intact.
  *
  * @template V
  */
@@ -40,13 +32,8 @@ export class ByteBoundedCache {
   has(url) { return this.#map.has(url); }
   keys() { return this.#map.keys(); }
 
-  /**
-   * Return the value for `url` (refreshing recency) or null. Delete +
-   * re-insert moves the URL to the tail so eviction (which pops the head)
-   * targets older entries first.
-   * @param {string} url
-   * @returns {V | null}
-   */
+  /** Return value or null; delete+re-insert refreshes LRU recency.
+   * @param {string} url @returns {V | null} */
   peek(url) {
     const slot = this.#map.get(url);
     if (!slot) return null;
@@ -56,9 +43,8 @@ export class ByteBoundedCache {
   }
 
   /**
-   * Insert `value` with declared `byteCost`. Returns true on insert, false
-   * if refused (already present, or alone larger than the cap). On refusal
-   * the caller still owns the value and onEvict is NOT called for it.
+   * Insert with declared cost. Returns false (and doesn't call onEvict)
+   * if refused: NaN/negative cost, duplicate, or alone over the cap.
    * Evicts oldest entries until the new entry fits.
    * @param {string} url
    * @param {V} value
@@ -66,9 +52,8 @@ export class ByteBoundedCache {
    * @returns {boolean}
    */
   set(url, value, byteCost) {
-    // Reject anything that would corrupt the bytes counter. NaN slips past
-    // a bare `> maxBytes` check (NaN comparisons are always false), so a
-    // NaN byteCost would otherwise land in `#bytes` and never recover.
+    // NaN comparisons are always false, so a bare `> maxBytes` would let
+    // NaN land in `#bytes` and never recover.
     if (!Number.isFinite(byteCost) || byteCost < 0) return false;
     if (this.#map.has(url)) return false;
     if (byteCost > this.#maxBytes) return false;
@@ -77,9 +62,7 @@ export class ByteBoundedCache {
       if (oldestKey === undefined) break;
       const oldest = this.#map.get(oldestKey);
       if (!oldest) break;
-      // Mutate internal state FIRST, then call onEvict. If the callback
-      // throws, `#bytes` and `#map` stay consistent and the error
-      // propagates to the caller.
+      // Mutate first, callback last (throw-safe).
       this.#bytes -= oldest.b;
       this.#map.delete(oldestKey);
       if (this.#onEvict) this.#onEvict(oldest.v);
@@ -89,16 +72,10 @@ export class ByteBoundedCache {
     return true;
   }
 
-  /**
-   * Remove `url`'s entry if present (calling onEvict on the value).
-   * @param {string} url
-   * @returns {boolean}  whether an entry was removed
-   */
+  /** Remove entry if present, calling onEvict. @param {string} url */
   delete(url) {
     const slot = this.#map.get(url);
     if (!slot) return false;
-    // Same ordering as eviction inside set(): mutate first, callback last,
-    // so a throwing onEvict can't leave the cache half-consistent.
     this.#bytes -= slot.b;
     this.#map.delete(url);
     if (this.#onEvict) this.#onEvict(slot.v);

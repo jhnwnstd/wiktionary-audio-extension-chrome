@@ -29,7 +29,9 @@ test.describe('popup', () => {
   });
 
   test.afterEach(async () => {
-    await context.close();
+    // Guard against beforeEach having failed to launch: an undefined
+    // context would throw a TypeError here and mask the real error.
+    if (context) await context.close();
   });
 
   test('renders all three mode radios with Original selected by default', async () => {

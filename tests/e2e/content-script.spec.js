@@ -61,7 +61,9 @@ test.describe('content script audio discovery', () => {
   });
 
   test.afterEach(async () => {
-    await context.close();
+    // Guard against beforeEach having failed to launch: an undefined
+    // context would throw a TypeError here and mask the real error.
+    if (context) await context.close();
   });
 
   test('discovers audio via Action API generator=images', async () => {

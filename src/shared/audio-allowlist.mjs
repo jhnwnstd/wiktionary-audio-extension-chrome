@@ -1,18 +1,11 @@
-// Allowlist of hostnames that may serve audio bytes to this extension.
-// Wikimedia serves all Wiktionary pronunciation audio from
-// upload.wikimedia.org; nothing else should ever appear in an API response
-// or message. Each context (content script, SW, offscreen) re-validates
-// independently: defense in depth degrades silently if one layer drifts,
-// so importing the same module here keeps all three honest by construction.
+// Allowlisted hostnames for audio bytes. Wikimedia serves all Wiktionary
+// pronunciation audio from upload.wikimedia.org. Every context (SW,
+// offscreen, content) re-validates by importing this module.
 
 export const AUDIO_HOST_ALLOWLIST = new Set(['upload.wikimedia.org']);
 
-/**
- * True iff `url` is an https URL on an allowlisted host. Reject non-string
- * input and anything URL parsing chokes on; never throws.
- * @param {string} url
- * @returns {boolean}
- */
+/** True iff `url` is https on an allowlisted host. Never throws.
+ * @param {string} url @returns {boolean} */
 export function isAllowedAudioUrl(url) {
   if (typeof url !== 'string') return false;
   try {

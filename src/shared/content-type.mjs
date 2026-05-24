@@ -1,13 +1,8 @@
-// Single predicate for "this looks like an audio response we should accept."
-// Centralized so a future MIME addition (Opus container migration, FLAC
-// rollout from Wikimedia) is a one-file edit instead of three. Mirrored
-// nowhere; imported by background.js prefetch and offscreen.js fetch.
+// "Looks like audio?" predicate. Imported by SW prefetch and offscreen
+// fetch; future MIMEs are a one-file edit.
 //
-// `audio/*` covers all audio MIMEs in current registry. `application/ogg`
-// is the legacy MIME Wikimedia still serves for `.ogg` audio files (the
-// audio/ogg alias was added later but the upload pipeline didn't switch).
-// Parameters (e.g. `audio/ogg; codecs=opus`) are tolerated by splitting
-// on `;` before equality-checking the legacy form.
+// audio/* + application/ogg (Wikimedia's legacy MIME for .ogg).
+// Parameters tolerated by splitting on `;`.
 
 /** @param {string | null | undefined} header */
 export function isAudioContentType(header) {

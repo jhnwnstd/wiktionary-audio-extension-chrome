@@ -1,8 +1,6 @@
-// Extension-context helpers used throughout the content script. Validates
-// that chrome.runtime is still live (the extension can be unloaded or
-// upgraded while a tab stays open, which invalidates every chrome.* call),
-// renders an in-page notice when it isn't, and provides a Promise-flavored
-// sendMessage with a timeout so callers never hang on a dead SW.
+// Extension-context helpers. An extension reload/upgrade invalidates every
+// chrome.* call in long-lived tabs; we detect that, render a notice, and
+// wrap sendMessage with a timeout so callers don't hang on a dead SW.
 
 import { t } from '../shared/i18n.mjs';
 
@@ -19,9 +17,7 @@ export function showContextInvalidatedMessage() {
     background:#f44336;color:#fff;padding:12px 16px;border-radius:8px;
     font:14px system-ui;max-width:300px;box-shadow:0 4px 12px rgba(0,0,0,.2)`;
 
-  // Built with DOM APIs (not innerHTML) so the page's CSP can't block the
-  // reload handler, and so future translation strings can't accidentally
-  // introduce HTML they shouldn't.
+  // DOM APIs (not innerHTML) so translation strings can't smuggle HTML.
   const strong = document.createElement('strong');
   strong.textContent = t.extensionReloaded;
   notice.appendChild(strong);
@@ -38,9 +34,7 @@ export function showContextInvalidatedMessage() {
 }
 
 /**
- * Send a message to the service worker, race it against a timeout, and
- * surface chrome.runtime.lastError as a rejection. Resolves with whatever
- * the background's `sendResponse` produced.
+ * Promise-shaped sendMessage with timeout. Surfaces chrome.runtime.lastError.
  * @param {object} message
  * @param {{ timeoutMs?: number }} [opts]
  * @returns {Promise<DownloadResponse | undefined>}

@@ -53,7 +53,7 @@ test.describe('discovery sweep', { tag: '@live' }, () => {
   });
 
   test.afterEach(async () => {
-    await context.close();
+    if (context) await context.close();
   });
 
   for (const url of urls) {
@@ -309,7 +309,7 @@ test.describe('viewport overlap + screenshots', { tag: '@live' }, () => {
   });
 
   test.afterEach(async () => {
-    await context.close();
+    if (context) await context.close();
   });
 
   test.afterAll(() => {
