@@ -889,6 +889,196 @@ for (const file of allowlistFiles.slice(1)) {
   );
 }
 
+// Same parity guarantee for the per-file byte cap. Mirrored in three
+// places because each context independently enforces it: background.js
+// (prefetch + post-read), content-script.js (drop oversize items at
+// discovery), offscreen.js (input cap before handing bytes to FFmpeg).
+// All three must agree on the literal byte budget or one layer becomes
+// weaker than another and a hostile or buggy size could slip past one
+// boundary. Regex extracts the multiplication source and compares the
+// text; this is intentionally stricter than evaluating the value because
+// a future rewrite like `5 * 1024 ** 2` would compute the same number
+// but signal inconsistent style across the codebase.
+section('Per-file byte cap parity across contexts');
+const capFiles = [
+  'src/background.js',
+  'src/content-script.js',
+  'src/offscreen.js',
+];
+const capRe = /PER_FILE_MAX_BYTES\s*=\s*([^;/\n]+?)\s*(?:;|\/\/)/;
+/** @type {Record<string, string>} */
+const capValues = {};
+for (const file of capFiles) {
+  const src = fs.readFileSync(path.join(__dirname, '../../', file), 'utf8');
+  const m = src.match(capRe);
+  assert(m !== null, `${file}: PER_FILE_MAX_BYTES declaration located`);
+  capValues[file] = m[1].trim();
+}
+const capRef = capValues[capFiles[0]];
+for (const file of capFiles.slice(1)) {
+  assert(
+    capValues[file] === capRef,
+    `${file} cap matches ${capFiles[0]} (got "${capValues[file]}", expected "${capRef}")`
+  );
+}
+
+// OUTPUT_MAX_BYTES is offscreen-local and intentionally not mirrored
+// (input cap is shared infrastructure; output cap is FFmpeg-specific
+// because PCM expands lossy sources). The real invariant we want to
+// guard against drift is that output >= input — if a future edit set
+// OUTPUT_MAX_BYTES smaller than the input cap, every transcode would
+// fail with "output over limit". Evaluate both expressions in a sandbox-
+// free way: the expressions are pure integer arithmetic with only `*`
+// and numeric literals, so a parsed-and-multiplied check is safe.
+function evalIntegerExpr(expr) {
+  // Accept only digits, *, whitespace, and `_` separators.
+  if (!/^[0-9*_\s]+$/.test(expr)) {
+    throw new Error(`unexpected characters in cap expression: ${expr}`);
+  }
+  return expr.split('*').map(t => parseInt(t.trim().replace(/_/g, ''), 10)).reduce((a, b) => a * b, 1);
+}
+const offscreenSrc = fs.readFileSync(path.join(__dirname, '../../src/offscreen.js'), 'utf8');
+const outM = offscreenSrc.match(/OUTPUT_MAX_BYTES\s*=\s*([^;/\n]+?)\s*(?:;|\/\/)/);
+assert(outM !== null, 'src/offscreen.js: OUTPUT_MAX_BYTES declaration located');
+const inputCapBytes = evalIntegerExpr(capRef);
+const outputCapBytes = evalIntegerExpr(outM[1].trim());
+assert(outputCapBytes > inputCapBytes,
+  `OUTPUT_MAX_BYTES (${outputCapBytes}) > PER_FILE_MAX_BYTES (${inputCapBytes})`);
+
+// Tests for ByteBoundedCache. Mirrored from src/background.js. The
+// invariant under test is "bytes() always equals the sum of stored entry
+// costs" across set / peek / delete / eviction paths. This is the
+// invariant the class structurally enforces, and the one that hand-
+// maintained counters used to drift on.
+section('ByteBoundedCache: invariants and eviction order');
+class ByteBoundedCache {
+  #map = new Map();
+  #bytes = 0;
+  #maxBytes;
+  #onEvict;
+  constructor(maxBytes, onEvict = null) {
+    this.#maxBytes = maxBytes;
+    this.#onEvict = onEvict;
+  }
+  size() { return this.#map.size; }
+  bytes() { return this.#bytes; }
+  has(url) { return this.#map.has(url); }
+  keys() { return this.#map.keys(); }
+  peek(url) {
+    const slot = this.#map.get(url);
+    if (!slot) return null;
+    this.#map.delete(url);
+    this.#map.set(url, slot);
+    return slot.v;
+  }
+  set(url, value, byteCost) {
+    if (this.#map.has(url)) return false;
+    if (byteCost > this.#maxBytes) return false;
+    while (this.#bytes + byteCost > this.#maxBytes && this.#map.size > 0) {
+      const oldestKey = this.#map.keys().next().value;
+      if (oldestKey === undefined) break;
+      const oldest = this.#map.get(oldestKey);
+      if (!oldest) break;
+      this.#bytes -= oldest.b;
+      if (this.#onEvict) this.#onEvict(oldest.v);
+      this.#map.delete(oldestKey);
+    }
+    this.#map.set(url, { v: value, b: byteCost });
+    this.#bytes += byteCost;
+    return true;
+  }
+  delete(url) {
+    const slot = this.#map.get(url);
+    if (!slot) return false;
+    this.#bytes -= slot.b;
+    if (this.#onEvict) this.#onEvict(slot.v);
+    this.#map.delete(url);
+    return true;
+  }
+}
+
+// Trivial case: empty cache.
+const c0 = new ByteBoundedCache(100);
+assert(c0.size() === 0, 'empty: size=0');
+assert(c0.bytes() === 0, 'empty: bytes=0');
+assert(c0.peek('x') === null, 'empty: peek returns null');
+assert(c0.delete('x') === false, 'empty: delete returns false');
+
+// Basic set/peek/delete.
+const c1 = new ByteBoundedCache(100);
+assert(c1.set('a', 'A', 10) === true, 'set: first entry stored');
+assert(c1.size() === 1, 'set: size=1');
+assert(c1.bytes() === 10, 'set: bytes=10');
+assert(c1.has('a'), 'has: true after set');
+assert(c1.peek('a') === 'A', 'peek: returns value');
+assert(c1.delete('a') === true, 'delete: returns true on hit');
+assert(c1.size() === 0, 'delete: size=0 after');
+assert(c1.bytes() === 0, 'delete: bytes=0 after');
+
+// set refuses duplicates and oversize entries; caller keeps ownership.
+const evictions = [];
+const c2 = new ByteBoundedCache(50, v => evictions.push(v));
+assert(c2.set('a', 'A', 10) === true, 'set: first store');
+assert(c2.set('a', 'A2', 10) === false, 'set: duplicate refused');
+assert(c2.peek('a') === 'A', 'duplicate refused: original kept');
+assert(c2.set('big', 'BIG', 51) === false, 'set: oversize refused');
+assert(evictions.length === 0, 'oversize refused: onEvict NOT called for refused value');
+
+// Eviction order is insertion order (LRU = oldest at head).
+const c3 = new ByteBoundedCache(30, v => evictions.push(v));
+evictions.length = 0;
+c3.set('a', 'A', 10);
+c3.set('b', 'B', 10);
+c3.set('c', 'C', 10);
+assert(c3.bytes() === 30, 'three at cap: bytes=30');
+c3.set('d', 'D', 10);  // forces eviction of a
+assert(evictions.join(',') === 'A', 'oldest evicted first');
+assert(c3.has('a') === false, 'oldest gone after eviction');
+assert(c3.has('d'), 'newest present after eviction');
+assert(c3.bytes() === 30, 'bytes still at cap after eviction');
+
+// peek refreshes recency: a touched entry survives the next eviction.
+evictions.length = 0;
+const c4 = new ByteBoundedCache(30, v => evictions.push(v));
+c4.set('a', 'A', 10);
+c4.set('b', 'B', 10);
+c4.set('c', 'C', 10);
+c4.peek('a');  // a is now newest
+c4.set('d', 'D', 10);  // forces eviction; b (now oldest) should go, not a
+assert(evictions.join(',') === 'B', 'peek refreshed recency: b evicted instead of a');
+assert(c4.has('a'), 'a survived after peek-refresh');
+assert(c4.has('d'), 'd inserted');
+
+// Bytes invariant holds through mixed sequences (the central property the
+// class exists to enforce).
+evictions.length = 0;
+const c5 = new ByteBoundedCache(100, v => evictions.push(v));
+const ops = [
+  () => c5.set('x', 'X', 30),
+  () => c5.set('y', 'Y', 25),
+  () => c5.set('z', 'Z', 40),
+  () => c5.peek('x'),
+  () => c5.delete('y'),
+  () => c5.set('w', 'W', 50),  // forces eviction
+  () => c5.peek('z'),
+  () => c5.set('v', 'V', 90),  // forces multiple evictions
+];
+for (const op of ops) op();
+let expectedBytes = 0;
+for (const k of c5.keys()) {
+  // Reach in via a side-channel (not exposed) — assert via peek invariant
+  expectedBytes += ({ x: 30, y: 25, z: 40, w: 50, v: 90 })[k] || 0;
+}
+assert(c5.bytes() === expectedBytes,
+  `bytes invariant: cache reports ${c5.bytes()}, sum of live entries is ${expectedBytes}`);
+
+// onEvict on explicit delete (transcoded cache's blob-revoke contract).
+evictions.length = 0;
+const c6 = new ByteBoundedCache(100, v => evictions.push(v));
+c6.set('a', 'A', 10);
+c6.delete('a');
+assert(evictions.join(',') === 'A', 'delete calls onEvict');
+
 // ============ SUMMARY ============
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

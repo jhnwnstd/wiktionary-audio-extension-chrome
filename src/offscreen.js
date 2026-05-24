@@ -4,10 +4,14 @@ const DEBUG = false;
 const log = DEBUG ? console.log.bind(console) : () => {};
 const logError = console.error.bind(console);
 
-// Hard size caps. Mirror of background.js PER_FILE_MAX_BYTES. The output
-// cap is 16 MB which covers the worst case from `-t 120` (~12 MB) with a
-// safety margin in case the duration flag misbehaves.
-const INPUT_MAX_BYTES = 5 * 1024 * 1024;
+// Hard size caps. PER_FILE_MAX_BYTES is the per-fetch input cap; mirrored
+// in background.js and content-script.js (a unit test asserts parity).
+// OUTPUT_MAX_BYTES is offscreen-local: PCM expands lossy sources, so the
+// output cap is necessarily larger than the input. 16 MB covers the worst
+// case from `-t 120` (~12 MB) with a safety margin if the duration flag
+// misbehaves; invariant `OUTPUT_MAX_BYTES > PER_FILE_MAX_BYTES` is
+// asserted by the parity test.
+const PER_FILE_MAX_BYTES = 5 * 1024 * 1024;
 const OUTPUT_MAX_BYTES = 16 * 1024 * 1024;
 
 // Allowlist for srcUrl. Mirrored locally because offscreen is a privileged
@@ -180,10 +184,10 @@ chrome.runtime.onConnect.addListener(port => {
           // so a bogus value can't sneak past the early bail. The post-read
           // bytes.length check still catches oversized payloads.
           const declared = parseInt(response.headers.get('Content-Length') || '0', 10);
-          if (Number.isFinite(declared) && declared > INPUT_MAX_BYTES) throw new Error('declared size over limit');
+          if (Number.isFinite(declared) && declared > PER_FILE_MAX_BYTES) throw new Error('declared size over limit');
           const bytes = new Uint8Array(await response.arrayBuffer());
           if (!bytes.length) throw new Error('Empty audio data');
-          if (bytes.length > INPUT_MAX_BYTES) throw new Error('input over limit');
+          if (bytes.length > PER_FILE_MAX_BYTES) throw new Error('input over limit');
           return bytes;
         })();
 

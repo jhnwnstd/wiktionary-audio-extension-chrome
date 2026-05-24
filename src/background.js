@@ -281,12 +281,104 @@ function isAllowedAudioUrl(url) {
   } catch { return false; }
 }
 
-// Insertion-order LRU: Map iterates in insertion order, so the first key is
-// the oldest. peekCached() refreshes recency by delete+re-insert, eviction
-// pops the head. No timestamp comparison and no full-Map scan per eviction.
-/** @type {Map<string, ArrayBuffer>} */
-const audioCache = new Map();
-let audioCacheBytes = 0;
+/**
+ * Insertion-order LRU bounded by total bytes (not item count). The single
+ * invariant being structurally enforced — `bytes()` equals the sum of all
+ * entry byte costs — used to be five hand-coordinated mutations across
+ * peek/add/dismiss; now no path outside this class can desync the counter.
+ *
+ * Eviction calls the optional `onEvict(value)` callback before removing
+ * the entry, so the transcoded-cache instance can revoke its blob URL
+ * automatically. The raw-bytes instance passes no callback (ArrayBuffers
+ * are GC'd when references drop).
+ *
+ * Entries are wrapped internally as {v, b} so a single API works for both
+ * ArrayBuffer payloads and richer structs.
+ *
+ * @template V
+ */
+class ByteBoundedCache {
+  /** @type {Map<string, { v: V, b: number }>} */
+  #map = new Map();
+  #bytes = 0;
+  #maxBytes;
+  /** @type {((value: V) => void) | null} */
+  #onEvict;
+
+  /**
+   * @param {number} maxBytes
+   * @param {((value: V) => void) | null} [onEvict]
+   */
+  constructor(maxBytes, onEvict = null) {
+    this.#maxBytes = maxBytes;
+    this.#onEvict = onEvict;
+  }
+
+  size() { return this.#map.size; }
+  bytes() { return this.#bytes; }
+  /** @param {string} url */
+  has(url) { return this.#map.has(url); }
+  keys() { return this.#map.keys(); }
+
+  /**
+   * Return the value for `url` (refreshing recency) or null. Delete +
+   * re-insert moves the URL to the tail so eviction (which pops the head)
+   * targets older entries first.
+   * @param {string} url
+   * @returns {V | null}
+   */
+  peek(url) {
+    const slot = this.#map.get(url);
+    if (!slot) return null;
+    this.#map.delete(url);
+    this.#map.set(url, slot);
+    return slot.v;
+  }
+
+  /**
+   * Insert `value` with declared `byteCost`. Returns true on insert, false
+   * if refused (already present, or alone larger than the cap). On refusal
+   * the caller still owns the value and onEvict is NOT called for it.
+   * Evicts oldest entries until the new entry fits.
+   * @param {string} url
+   * @param {V} value
+   * @param {number} byteCost
+   * @returns {boolean}
+   */
+  set(url, value, byteCost) {
+    if (this.#map.has(url)) return false;
+    if (byteCost > this.#maxBytes) return false;
+    while (this.#bytes + byteCost > this.#maxBytes && this.#map.size > 0) {
+      const oldestKey = this.#map.keys().next().value;
+      if (oldestKey === undefined) break;
+      const oldest = this.#map.get(oldestKey);
+      if (!oldest) break;
+      this.#bytes -= oldest.b;
+      if (this.#onEvict) this.#onEvict(oldest.v);
+      this.#map.delete(oldestKey);
+    }
+    this.#map.set(url, { v: value, b: byteCost });
+    this.#bytes += byteCost;
+    return true;
+  }
+
+  /**
+   * Remove `url`'s entry if present (calling onEvict on the value).
+   * @param {string} url
+   * @returns {boolean}  whether an entry was removed
+   */
+  delete(url) {
+    const slot = this.#map.get(url);
+    if (!slot) return false;
+    this.#bytes -= slot.b;
+    if (this.#onEvict) this.#onEvict(slot.v);
+    this.#map.delete(url);
+    return true;
+  }
+}
+
+/** @type {ByteBoundedCache<ArrayBuffer>} */
+const audioCache = new ByteBoundedCache(PREFETCH_CACHE_MAX_BYTES);
 
 // In-flight prefetch AbortControllers, keyed by URL. Lets PANEL_DISMISSED
 // abort an in-progress fetch instead of letting it run to completion and
@@ -308,9 +400,17 @@ const inflightPrefetches = new Map();
 
 const TRANSCODED_CACHE_MAX_BYTES = 20 * 1024 * 1024;
 
-/** @type {Map<string, { blobUrl: string, filename: string, byteLength: number }>} */
-const transcodedCache = new Map();
-let transcodedCacheBytes = 0;
+/** @typedef {{ blobUrl: string, filename: string, byteLength: number }} TranscodedEntry */
+
+/** @type {ByteBoundedCache<TranscodedEntry>} */
+const transcodedCache = new ByteBoundedCache(
+  TRANSCODED_CACHE_MAX_BYTES,
+  // onEvict: revoke the blob URL automatically when the cache drops it.
+  // Callers no longer need to remember to revoke on eviction; the only
+  // remaining caller-side revoke is for blob URLs we DECIDE not to insert
+  // (dismissed-while-transcoding, duplicate, over per-entry cap).
+  entry => revokeBlobInOffscreen(entry.blobUrl),
+);
 
 /** @type {Map<string, Promise<{ filename: string, blobUrl: string, byteLength: number }>>} */
 const transcodeInflight = new Map();
@@ -347,22 +447,18 @@ function dismissUrl(url) {
 
 /**
  * @param {string} url
- * @returns {{ blobUrl: string, filename: string, byteLength: number } | null}
+ * @returns {TranscodedEntry | null}
  */
 function peekTranscoded(url) {
-  const entry = transcodedCache.get(url);
-  if (!entry) return null;
-  // Refresh recency: delete + re-insert moves the key to the tail of the
-  // insertion order so eviction targets older URLs first.
-  transcodedCache.delete(url);
-  transcodedCache.set(url, entry);
-  return { blobUrl: entry.blobUrl, filename: entry.filename, byteLength: entry.byteLength };
+  return transcodedCache.peek(url);
 }
 
 /**
- * Store a transcoded WAV entry, evicting older entries as needed to stay
- * under the cap. Eviction also revokes the blob URL so the underlying
- * Blob can be GC'd in offscreen.
+ * Store a transcoded WAV entry. The three "refused" paths (dismissed,
+ * already cached, doesn't fit) revoke the orphan blob URL ourselves
+ * because the cache never took ownership of it. Eviction inside the
+ * cache automatically revokes blob URLs the cache DID own (via the
+ * onEvict callback wired at construction).
  *
  * @param {string} url
  * @param {string} filename
@@ -370,32 +466,15 @@ function peekTranscoded(url) {
  * @param {number} byteLength
  */
 function addTranscoded(url, filename, blobUrl, byteLength) {
-  if (dismissedUrls.has(url)) {
-    // The user dismissed this page after we started the transcode. Don't
-    // resurrect what they explicitly evicted; just release the blob.
+  if (dismissedUrls.has(url) || transcodedCache.has(url)) {
     revokeBlobInOffscreen(blobUrl);
     return;
   }
-  if (transcodedCache.has(url)) {
-    // Already cached. Discard the new blob URL since we won't store it.
+  const stored = transcodedCache.set(url, { blobUrl, filename, byteLength }, byteLength);
+  if (!stored) {
+    // Refused: entry by itself exceeds the cache cap. Revoke the orphan.
     revokeBlobInOffscreen(blobUrl);
-    return;
   }
-  if (byteLength > TRANSCODED_CACHE_MAX_BYTES) {
-    revokeBlobInOffscreen(blobUrl);
-    return;
-  }
-  while (transcodedCacheBytes + byteLength > TRANSCODED_CACHE_MAX_BYTES && transcodedCache.size > 0) {
-    const oldestUrl = transcodedCache.keys().next().value;
-    if (oldestUrl === undefined) break;
-    const old = transcodedCache.get(oldestUrl);
-    if (!old) break;
-    transcodedCacheBytes -= old.byteLength;
-    revokeBlobInOffscreen(old.blobUrl);
-    transcodedCache.delete(oldestUrl);
-  }
-  transcodedCache.set(url, { blobUrl, filename, byteLength });
-  transcodedCacheBytes += byteLength;
 }
 
 /**
@@ -461,49 +540,31 @@ async function triggerSpeculativeTranscode(url, downloadName) {
 }
 
 /**
- * Look up a cached entry and refresh recency. Returns the bytes or null.
- * Note: this is a peek, not a take in the Rust sense. The entry stays in
- * the cache so subsequent clicks for the same URL also hit. The name
- * (peekCached) reflects that; delete + re-insert moves the URL to the
- * tail of insertion order so eviction (which pops the head) targets older
- * entries first.
+ * Look up the cached bytes for `url`, refreshing recency. Returns the bytes
+ * or null. This is a peek, not a take in the Rust sense: the entry stays
+ * cached so subsequent clicks for the same URL also hit.
  * @param {string} url
  * @returns {ArrayBuffer | null}
  */
 function peekCached(url) {
-  const bytes = audioCache.get(url);
-  if (!bytes) return null;
-  audioCache.delete(url);
-  audioCache.set(url, bytes);
-  return bytes;
+  return audioCache.peek(url);
 }
 
 /**
- * Add bytes to the cache, evicting oldest entries until we fit under the cap.
- * Skips URLs already present and entries that wouldn't fit even alone.
+ * Add bytes to the cache if eligible. The dismissedUrls guard is the
+ * deterministic version of the abort-controller race (PANEL_DISMISSED
+ * aborts in-flight fetches but completion can land first); a tombstoned
+ * URL is never repopulated. The per-file cap is enforced upstream in
+ * prefetchAudio, repeated here so this single ingress preserves the
+ * invariant on its own.
  * @param {string} url
  * @param {ArrayBuffer} bytes
  */
 function addToCache(url, bytes) {
   if (audioCache.has(url)) return;
-  // If the user dismissed this URL since the fetch began, don't repopulate
-  // the cache they just asked us to evict. (PANEL_DISMISSED also aborts
-  // the controller, but that's racy; this is the deterministic check.)
   if (dismissedUrls.has(url)) return;
-  // Hard per-file cap. Invariant enforced here even though prefetchAudio
-  // also checks; addToCache is the single ingress to audioCache so anything
-  // that lands here is guaranteed below the limit.
   if (bytes.byteLength > PER_FILE_MAX_BYTES) return;
-  while (audioCacheBytes + bytes.byteLength > PREFETCH_CACHE_MAX_BYTES && audioCache.size > 0) {
-    const oldestUrl = audioCache.keys().next().value;
-    if (oldestUrl === undefined) break;
-    const old = audioCache.get(oldestUrl);
-    if (!old) break;
-    audioCacheBytes -= old.byteLength;
-    audioCache.delete(oldestUrl);
-  }
-  audioCache.set(url, bytes);
-  audioCacheBytes += bytes.byteLength;
+  audioCache.set(url, bytes, bytes.byteLength);
 }
 
 /**
@@ -606,7 +667,7 @@ async function prefetchAudio(items) {
       }
     });
     await Promise.allSettled(workers);
-    log(`[Background] Prefetch done. Cache: ${audioCache.size} items, ${(audioCacheBytes / 1024).toFixed(0)} KB`);
+    log(`[Background] Prefetch done. Cache: ${audioCache.size()} items, ${(audioCache.bytes() / 1024).toFixed(0)} KB`);
   }
 
   // Speculative top-item transcode. Fire and forget; the result populates
@@ -637,17 +698,11 @@ function dismissUrls(urls) {
     dismissUrl(url);
     const ctrl = inflightPrefetches.get(url);
     if (ctrl) ctrl.abort();
-    const entry = audioCache.get(url);
-    if (entry) {
-      audioCacheBytes -= entry.byteLength;
-      audioCache.delete(url);
-    }
-    const trans = transcodedCache.get(url);
-    if (trans) {
-      transcodedCacheBytes -= trans.byteLength;
-      revokeBlobInOffscreen(trans.blobUrl);
-      transcodedCache.delete(url);
-    }
+    // Both caches handle byte-counter bookkeeping internally; transcoded
+    // additionally revokes the blob URL via its onEvict callback. No
+    // caller-side counter arithmetic to drift.
+    audioCache.delete(url);
+    transcodedCache.delete(url);
   }
 }
 
@@ -874,13 +929,13 @@ chrome.runtime.onMessage.addListener(
 globalThis._wadInspectAudioCache = () => {
   if (!globalThis.__WAD_TEST__) return null;
   return {
-    cachedCount: audioCache.size,
-    cachedUrls: Array.from(audioCache.keys()),
-    totalBytes: audioCacheBytes,
-    transcodedCount: transcodedCache.size,
-    transcodedUrls: Array.from(transcodedCache.keys()),
-    transcodedBytes: transcodedCacheBytes,
-    transcodeInflight: Array.from(transcodeInflight.keys()),
+    cachedCount: audioCache.size(),
+    cachedUrls: [...audioCache.keys()],
+    totalBytes: audioCache.bytes(),
+    transcodedCount: transcodedCache.size(),
+    transcodedUrls: [...transcodedCache.keys()],
+    transcodedBytes: transcodedCache.bytes(),
+    transcodeInflight: [...transcodeInflight.keys()],
   };
 };
 
