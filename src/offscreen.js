@@ -10,18 +10,13 @@ const logError = console.error.bind(console);
 const INPUT_MAX_BYTES = 5 * 1024 * 1024;
 const OUTPUT_MAX_BYTES = 16 * 1024 * 1024;
 
-// Allowlist for srcUrl. Two acceptable shapes:
-//   * https://upload.wikimedia.org/...  (offscreen fetches over the network)
-//   * blob:chrome-extension://<our-id>/<uuid>  (SW handed us prefetched
-//     bytes via the Blob registry; fetch resolves locally, no network)
-// Mirrored locally because offscreen is a privileged context and should not
-// implicitly trust a URL just because background forwarded it.
+// Allowlist for srcUrl. Mirrored locally because offscreen is a privileged
+// context and should not implicitly trust a URL just because background
+// forwarded it.
 const AUDIO_HOST_ALLOWLIST = new Set(['upload.wikimedia.org']);
-const EXTENSION_BLOB_PREFIX = `blob:${chrome.runtime.getURL('').replace(/\/$/, '')}/`;
 /** @param {string} url */
-function isAllowedSourceUrl(url) {
+function isAllowedAudioUrl(url) {
   if (typeof url !== 'string') return false;
-  if (url.startsWith(EXTENSION_BLOB_PREFIX)) return true;
   try {
     const u = new URL(url);
     return u.protocol === 'https:' && AUDIO_HOST_ALLOWLIST.has(u.hostname);
@@ -153,7 +148,7 @@ chrome.runtime.onConnect.addListener(port => {
     // shouldn't trust an upstream caller. Acceptable URLs are Wikimedia
     // https or a blob: URL whose origin matches our extension (SW handed us
     // prefetched bytes via the browser's Blob registry).
-    if (!isAllowedSourceUrl(srcUrl)) {
+    if (!isAllowedAudioUrl(srcUrl)) {
       port.postMessage({ ok: false, error: 'srcUrl not allowed' });
       return;
     }
@@ -173,7 +168,7 @@ chrome.runtime.onConnect.addListener(port => {
           // in bytes from outside the allowed origin or shape.
           const response = await fetch(srcUrl);
           if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
-          if (!isAllowedSourceUrl(response.url)) throw new Error('redirect outside allowlist');
+          if (!isAllowedAudioUrl(response.url)) throw new Error('redirect outside allowlist');
           const declared = parseInt(response.headers.get('Content-Length') || '0', 10);
           if (declared > INPUT_MAX_BYTES) throw new Error('declared size over limit');
           const bytes = new Uint8Array(await response.arrayBuffer());

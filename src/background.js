@@ -390,11 +390,13 @@ function addTranscoded(url, filename, blobUrl, byteLength) {
 /**
  * Transcode `url` to WAV and cache the result. Dedupes by url so concurrent
  * calls (e.g., user click + speculative) share one ffmpeg.exec. Returns
- * immediately if the WAV is already cached. If we have the source bytes in
- * audioCache, hand them to offscreen via a SW-created blob: URL: zero-copy
- * (no port marshaling, no extra network fetch). Otherwise pass the original
- * https URL and offscreen fetches it (usually a browser HTTP cache hit
- * from our earlier prefetch).
+ * immediately if the WAV is already cached. Always passes the original https
+ * URL to offscreen; offscreen's fetch lands in the browser HTTP cache from
+ * the SW prefetch issued earlier, so no byte marshaling and no extra
+ * network round trip in the common case. The SW audioCache exists for the
+ * Original-mode small-file data URL path; the Convert path doesn't touch it
+ * because Chrome MV3 service workers don't expose URL.createObjectURL, so
+ * a SW-side Blob handoff isn't possible today.
  *
  * @param {string} url  cache key
  * @param {string} baseName
@@ -408,31 +410,9 @@ async function transcodeForUrl(url, baseName) {
   if (existing) return existing;
 
   const promise = (async () => {
-    const cached = takeCached(url);
-    let srcUrl = url;
-    let toRevoke = null;
-    if (cached) {
-      // Wrap the cached bytes as a Blob and hand offscreen the URL. The
-      // browser's Blob registry is shared across same-origin contexts in
-      // the extension (chrome-extension://<id>), so offscreen's fetch
-      // resolves locally without a network round trip or a typed-array
-      // serialization across the runtime port.
-      const blob = new Blob([cached], { type: 'application/octet-stream' });
-      srcUrl = URL.createObjectURL(blob);
-      toRevoke = srcUrl;
-    }
-    try {
-      const result = await transcodeToWav(srcUrl, baseName);
-      addTranscoded(url, result.filename, result.blobUrl, result.byteLength);
-      return result;
-    } finally {
-      // Offscreen has already read the bytes into its heap by the time we
-      // get the ack (success or failure). Release the blob URL so the
-      // underlying Blob can be GC'd in this context.
-      if (toRevoke) {
-        try { URL.revokeObjectURL(toRevoke); } catch { /* already gone */ }
-      }
-    }
+    const result = await transcodeToWav(url, baseName);
+    addTranscoded(url, result.filename, result.blobUrl, result.byteLength);
+    return result;
   })();
   transcodeInflight.set(url, promise);
   try {

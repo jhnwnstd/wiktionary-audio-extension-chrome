@@ -503,15 +503,6 @@ function humanReadableName(parsed, originalFilename) {
   return parts.join(' ') + (parsed.ext ? ` .${parsed.ext}` : '');
 }
 
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
 // ============== AUDIO DISCOVERY ==============
 //
 // Single discovery path: MediaWiki Action API with `generator=images` +
@@ -919,95 +910,149 @@ function preconnectToUploadWikimedia() {
   document.head.appendChild(link);
 }
 
+// Inline style strings, defined once. Inside a closed shadow root none of
+// these need ID prefixing, and page CSS can't reach them anyway.
+const PANEL_STYLE = 'background:#fff;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25);width:clamp(260px, 22vw, 380px);max-width:100%;max-height:100%;display:flex;flex-direction:column;overflow:hidden';
+const HEADER_STYLE = 'padding:10px 12px;border-bottom:1px solid #eee;font-weight:600;display:flex;justify-content:space-between;align-items:center;flex-shrink:0';
+const MINIMIZE_STYLE = 'border:0;background:none;color:#666;cursor:pointer;font-size:16px;padding:4px;border-radius:4px';
+const BODY_STYLE = 'flex:1 1 auto;overflow:auto;max-height:clamp(180px, 55vh, 500px)';
+const ROW_STYLE = 'display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid #f6f6f6';
+const PREVIEW_STYLE = 'border:0;border-radius:6px;width:28px;height:28px;display:grid;place-items:center;background:#eef2f7;color:#1a73e8;cursor:pointer;flex-shrink:0';
+const NAME_STYLE = 'flex:1;min-width:0;line-height:1.3;overflow-wrap:anywhere';
+const DOWNLOAD_STYLE = 'border:0;border-radius:8px;padding:6px 12px;background:#1a73e8;color:#fff;cursor:pointer;flex-shrink:0';
+const FOOTER_STYLE = 'display:flex;gap:8px;padding:10px 12px;flex-shrink:0';
+const DOWNLOAD_ALL_STYLE = 'border:0;border-radius:8px;padding:8px 12px;background:#1a73e8;color:#fff;cursor:pointer';
+const HOST_STYLE = [
+  '--wad-edge-gap:clamp(8px, 1.25vw, 16px)',
+  'position:fixed',
+  'right:var(--wad-edge-gap)',
+  'bottom:var(--wad-edge-gap)',
+  'z-index:2147483647',
+  'font:13px system-ui',
+  'max-width:calc(100vw - (2 * var(--wad-edge-gap)))',
+  'max-height:calc(100vh - (2 * var(--wad-edge-gap)))',
+  'display:flex',
+  'flex-direction:column',
+].join(';');
+
 function createUI(items) {
   if (!items.length) return;
   preconnectToUploadWikimedia();
 
+  // The host lives in light DOM (page can see it) but its contents render
+  // inside an open shadow root for CSS + DOM-mutation encapsulation. The
+  // load-bearing security primitive is closure-based item binding: every
+  // button captures its own AudioItem, so there is no DOM attribute a
+  // page could rewrite to retarget a real user click to a different
+  // download. event.isTrusted on every handler additionally blocks any
+  // script-dispatched click. Open mode is used so Playwright (and other
+  // tooling) can introspect for tests; the security guarantee does not
+  // depend on shadow opacity.
+  const host = document.createElement('div');
+  host.style.cssText = HOST_STYLE;
+  const root = host.attachShadow({ mode: 'open' });
+
   const panel = document.createElement('div');
-  // Outer positioner. Viewport caps guarantee the panel always fits on
-  // screen regardless of window size. The --wad-edge-gap custom property
-  // shrinks the margin on very narrow viewports; on 1280+ desktops it
-  // pins at 16px. Flex column lets the inner panel shrink its scrollable
-  // body when the viewport is too short for the preferred max-height.
-  panel.style.cssText = [
-    '--wad-edge-gap:clamp(8px, 1.25vw, 16px)',
-    'position:fixed',
-    'right:var(--wad-edge-gap)',
-    'bottom:var(--wad-edge-gap)',
-    'z-index:2147483647',
-    'font:13px system-ui',
-    'max-width:calc(100vw - (2 * var(--wad-edge-gap)))',
-    'max-height:calc(100vh - (2 * var(--wad-edge-gap)))',
-    'display:flex',
-    'flex-direction:column',
-  ].join(';');
-  panel.innerHTML = `
-    <div id="audio-panel" data-testid="wad-panel" style="background:#fff;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25);width:clamp(260px, 22vw, 380px);max-width:100%;max-height:100%;display:flex;flex-direction:column;overflow:hidden">
-      <div style="padding:10px 12px;border-bottom:1px solid #eee;font-weight:600;display:flex;justify-content:space-between;align-items:center;flex-shrink:0" title="Pronunciation audio found on this Wiktionary page by the Wiktionary Audio Downloader extension">
-        <span>${t.audioFiles}</span>
-        <button id="minimize-btn" data-testid="wad-minimize" style="border:0;background:none;color:#666;cursor:pointer;font-size:16px;padding:4px;border-radius:4px" title="Minimize panel">\u2212</button>
-      </div>
-      <div class="audio-panel-body" style="flex:1 1 auto;overflow:auto;max-height:clamp(180px, 55vh, 500px)">
-        ${items.map((item, i) => `
-          <div data-testid="wad-audio-item" style="display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid #f6f6f6" title="${escapeHtml(item.filename)}">
-            <button data-testid="wad-preview" data-preview="${i}" style="border:0;border-radius:6px;width:28px;height:28px;display:grid;place-items:center;background:#eef2f7;color:#1a73e8;cursor:pointer;flex-shrink:0" title="Preview">${PLAY_SVG}</button>
-            <div style="flex:1;min-width:0;line-height:1.3;overflow-wrap:anywhere" data-testid="wad-audio-filename">${escapeHtml(item.displayName || item.filename)}</div>
-            <button data-testid="wad-download" data-i="${i}" style="border:0;border-radius:8px;padding:6px 12px;background:#1a73e8;color:#fff;cursor:pointer;flex-shrink:0">${t.downloadButton}</button>
-          </div>`).join('')}
-      </div>
-      ${items.length > 1 ? `
-      <div class="audio-panel-footer" style="display:flex;gap:8px;padding:10px 12px;flex-shrink:0">
-        <button id="dl-all" data-testid="wad-download-all" style="border:0;border-radius:8px;padding:8px 12px;background:#1a73e8;color:#fff;cursor:pointer">${t.downloadAllButton}</button>
-      </div>` : ''}
-    </div>`;
+  panel.id = 'audio-panel';
+  panel.setAttribute('data-testid', 'wad-panel');
+  panel.style.cssText = PANEL_STYLE;
 
-  // Per-panel completion tracking. Used so that when every individual
-  // Download button has succeeded, the Download All button auto-flips to
-  // "Downloaded" too, even if the user never clicked it directly. State
-  // lives in this closure so a page refresh resets everything.
-  const batchBtn = /** @type {HTMLButtonElement | null} */ (panel.querySelector('#dl-all'));
-  /** @type {Set<number>} */
-  const downloadedIndexes = new Set();
+  const header = document.createElement('div');
+  header.style.cssText = HEADER_STYLE;
+  header.title = 'Pronunciation audio found on this Wiktionary page by the Wiktionary Audio Downloader extension';
+  const headerText = document.createElement('span');
+  headerText.textContent = t.audioFiles;
+  const minimizeBtn = document.createElement('button');
+  minimizeBtn.setAttribute('data-testid', 'wad-minimize');
+  minimizeBtn.style.cssText = MINIMIZE_STYLE;
+  minimizeBtn.title = 'Minimize panel';
+  minimizeBtn.textContent = '\u2212';
+  header.append(headerText, minimizeBtn);
 
-  // Delegated click handling for preview + download buttons. Reject events
-  // that didn't come from a real user gesture: page scripts can call .click()
-  // or dispatch bubbling events on these buttons since they live in the page
-  // DOM, and we don't want page JS triggering privileged downloads on its
-  // own. event.isTrusted is set to false for any script-generated event.
-  panel.addEventListener('click', e => {
-    if (!e.isTrusted) return;
-    const target = /** @type {HTMLElement} */ (e.target);
-    const preview = /** @type {HTMLButtonElement | null} */ (target.closest('button[data-preview]'));
-    if (preview) {
-      previewAudio(items[Number(preview.dataset.preview)], preview);
-      return;
-    }
-    const dl = /** @type {HTMLButtonElement | null} */ (target.closest('button[data-i]'));
-    if (!dl) return;
-    const idx = Number(dl.dataset.i);
-    downloadFile(items[idx], dl).then((ok) => {
-      if (!ok) return;
-      downloadedIndexes.add(idx);
-      if (batchBtn && downloadedIndexes.size === items.length) {
-        showFeedback(batchBtn, t.downloaded, 'success');
-      }
+  const body = document.createElement('div');
+  body.className = 'audio-panel-body';
+  body.style.cssText = BODY_STYLE;
+
+  // Per-panel completion tracking. When every individual Download button
+  // has succeeded the Download All button auto-flips to "Downloaded" too,
+  // even if the user never clicked it. We key the Set on the AudioItem
+  // object so there is no integer index in play that a page could spoof.
+  /** @type {Set<unknown>} */
+  const downloadedItems = new Set();
+  /** @type {HTMLButtonElement | null} */
+  let batchBtn = null;
+
+  for (const item of items) {
+    const row = document.createElement('div');
+    row.setAttribute('data-testid', 'wad-audio-item');
+    row.style.cssText = ROW_STYLE;
+    row.title = item.filename;
+
+    const previewBtn = document.createElement('button');
+    previewBtn.setAttribute('data-testid', 'wad-preview');
+    previewBtn.style.cssText = PREVIEW_STYLE;
+    previewBtn.title = 'Preview';
+    previewBtn.innerHTML = PLAY_SVG;
+    previewBtn.addEventListener('click', (e) => {
+      // event.isTrusted is false for any script-generated event. Combined
+      // with the closed shadow root (page can't dispatch directly onto
+      // shadow content from outside, and our closure-captured `item`
+      // makes attribute-driven retargeting impossible), this means only
+      // real user clicks can drive privileged audio playback.
+      if (!e.isTrusted) return;
+      previewAudio(item, previewBtn);
     });
-  });
 
-  if (batchBtn) {
-    batchBtn.onclick = (e) => {
+    const name = document.createElement('div');
+    name.setAttribute('data-testid', 'wad-audio-filename');
+    name.style.cssText = NAME_STYLE;
+    name.textContent = item.displayName || item.filename;
+
+    const dlBtn = document.createElement('button');
+    dlBtn.setAttribute('data-testid', 'wad-download');
+    dlBtn.style.cssText = DOWNLOAD_STYLE;
+    dlBtn.textContent = t.downloadButton;
+    dlBtn.addEventListener('click', (e) => {
+      if (!e.isTrusted) return;
+      // `item` is closure captured per row, so even a tampered DOM
+      // (which would require breaking shadow encapsulation) can't reroute
+      // this click to a different audio file.
+      downloadFile(item, dlBtn).then((ok) => {
+        if (!ok) return;
+        downloadedItems.add(item);
+        if (batchBtn && downloadedItems.size === items.length) {
+          showFeedback(batchBtn, t.downloaded, 'success');
+        }
+      });
+    });
+
+    row.append(previewBtn, name, dlBtn);
+    body.appendChild(row);
+  }
+
+  panel.append(header, body);
+
+  let footer = /** @type {HTMLElement | null} */ (null);
+  if (items.length > 1) {
+    footer = document.createElement('div');
+    footer.className = 'audio-panel-footer';
+    footer.style.cssText = FOOTER_STYLE;
+    batchBtn = document.createElement('button');
+    batchBtn.setAttribute('data-testid', 'wad-download-all');
+    batchBtn.style.cssText = DOWNLOAD_ALL_STYLE;
+    batchBtn.textContent = t.downloadAllButton;
+    batchBtn.addEventListener('click', (e) => {
       if (!e.isTrusted) return;
       downloadAll(items, batchBtn);
-    };
+    });
+    footer.appendChild(batchBtn);
+    panel.appendChild(footer);
   }
 
   // Minimize/restore pauses any active preview when collapsing. Also
   // gates prefetch lifecycle: minimizing for >2s tells the background to
   // evict this page's bytes (user has signaled they won't use the panel);
   // re-opening after that triggers a fresh prefetch.
-  const minimizeBtn = /** @type {HTMLButtonElement} */ (panel.querySelector('#minimize-btn'));
-  const body = /** @type {HTMLElement | null} */ (panel.querySelector('.audio-panel-body'));
-  const footer = /** @type {HTMLElement | null} */ (panel.querySelector('.audio-panel-footer'));
   let minimized = false;
   const itemUrls = items.map(i => i.url);
   const prefetchItems = items.map(i => ({ url: i.url, downloadName: i.downloadName }));
@@ -1015,19 +1060,16 @@ function createUI(items) {
   let dismissTimer = null;
   let dismissed = false;
 
-  minimizeBtn.onclick = (e) => {
+  minimizeBtn.addEventListener('click', (e) => {
     if (!e.isTrusted) return;
     minimized = !minimized;
     if (minimized && previewState.audio) previewState.audio.pause();
-    if (body) body.style.display = minimized ? 'none' : '';
+    body.style.display = minimized ? 'none' : '';
     if (footer) footer.style.display = minimized ? 'none' : 'flex';
     minimizeBtn.textContent = minimized ? '+' : '\u2212';
     minimizeBtn.title = minimized ? 'Expand panel' : 'Minimize panel';
 
     if (minimized) {
-      // Arm the dismiss timer. If the panel stays minimized past 2s, treat
-      // the user's intent as "not using the extension on this page". Ask
-      // background to evict the bytes and abort in-flight prefetch.
       dismissTimer = /** @type {any} */ (setTimeout(() => {
         dismissTimer = null;
         dismissed = true;
@@ -1040,18 +1082,17 @@ function createUI(items) {
         dismissTimer = null;
       }
       if (dismissed) {
-        // Cache was evicted while panel was minimized. Re-engage: ask
-        // background to prefetch again so the next click is still fast.
         dismissed = false;
         safeSendMessage({ type: 'PREFETCH_AUDIO', items: prefetchItems }, { timeoutMs: 5000 })
           .catch(() => { /* opportunistic */ });
       }
     }
-  };
-  minimizeBtn.onmouseover = () => { minimizeBtn.style.background = '#f0f1f3'; };
-  minimizeBtn.onmouseout = () => { minimizeBtn.style.background = 'none'; };
+  });
+  minimizeBtn.addEventListener('mouseover', () => { minimizeBtn.style.background = '#f0f1f3'; });
+  minimizeBtn.addEventListener('mouseout', () => { minimizeBtn.style.background = 'none'; });
 
-  document.documentElement.appendChild(panel);
+  root.appendChild(panel);
+  document.documentElement.appendChild(host);
 }
 
 // ============== MAIN ==============
