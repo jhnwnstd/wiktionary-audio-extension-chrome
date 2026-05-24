@@ -16,11 +16,11 @@ Converted output is 16-bit PCM at 48 kHz, mono, with triangular dither. The orig
 
 ## Install
 
-1. Download `wiktionary-audio-downloader-*.zip` from the [latest release](https://github.com/jhnwnstd/wiktionary-audio-extension-chrome/releases/latest) and unzip it anywhere.
-2. Open Chrome and enter `chrome://extensions` in the address bar.
+1. Download `wiktionary-audio-downloader-*.zip` from the [latest release](https://github.com/jhnwnstd/wiktionary-audio-extension-chrome/releases/latest) and unzip it.
+2. Enter `chrome://extensions` in the address bar.
 3. Enable **Developer mode**.
 4. Click **Load unpacked**.
-5. Select the unzipped `wiktionary-audio-downloader-*` folder. The selected folder should contain `manifest.json`.
+5. Select the unzipped `wiktionary-audio-downloader-*` folder.
 
 ## Usage
 
