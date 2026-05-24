@@ -363,7 +363,7 @@ test.describe('content script audio discovery', () => {
   //
   // Setup that forces the click path to its own-fetch branch: the prefetch
   // is made to fail, so when the click hits ensureValidatedBytes there is
-  // no cached bytes and no in-flight prefetch to await — it registers
+  // no cached bytes and no in-flight prefetch to await. It registers
   // source='click' and fetches itself.
   test('PANEL_DISMISSED does not abort a click-initiated Original download', async () => {
     const AUDIO_URL = 'https://upload.wikimedia.org/x/En-us-water.ogg';
