@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Build dist/wiktionary-audio-downloader-<version>.zip from src/.
 #
-# The zip is flat: unzipping yields the extension root directly, ready for
-# chrome://extensions -> Load unpacked. Version is read from package.json.
+# Unzipping yields a single folder (wiktionary-audio-downloader-<version>/)
+# containing the extension root, so the user has one obvious thing to point
+# chrome://extensions -> Load unpacked at. Version is read from package.json.
 # globals.d.ts is excluded (TypeScript-only, ignored at runtime).
 set -euo pipefail
 
@@ -13,10 +14,13 @@ NAME="wiktionary-audio-downloader-${VERSION}"
 OUT="dist/${NAME}.zip"
 
 rm -rf dist
-mkdir -p dist
+mkdir -p "dist/${NAME}"
 
-# Zip contents of src/ (not src/ itself) so users get a flat layout.
-(cd src && zip -qr "../${OUT}" . -x 'globals.d.ts')
+cp -r src/. "dist/${NAME}/"
+rm -f "dist/${NAME}/globals.d.ts"
+
+(cd dist && zip -qr "${NAME}.zip" "${NAME}")
+rm -rf "dist/${NAME}"
 
 echo "Built: ${OUT}"
 echo "Size:  $(du -h "${OUT}" | cut -f1)"
