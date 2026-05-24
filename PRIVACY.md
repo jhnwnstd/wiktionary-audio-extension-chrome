@@ -1,40 +1,38 @@
 # Privacy Policy
 
-**Wiktionary Audio Downloader** is designed to work without collecting personal information.
+**Wiktionary Audio Downloader** runs entirely on your machine. It contacts no analytics or telemetry service, has no access to websites other than Wiktionary, and never uploads your audio anywhere.
 
 ## What this extension collects
 
-Nothing. The extension does not use analytics, telemetry, usage tracking, error reporting, or user identifiers.
+Nothing. No analytics, no telemetry, no usage tracking, no error reporting, no user identifiers.
 
 ## Persistent settings
 
-The extension stores the selected download mode setting on your device using Chrome's built-in `storage.sync` API. This allows the extension to remember your preference for Original, Convert, or Both modes.
-
-If you are signed in to Chrome and have sync enabled, Chrome may sync this setting across your own Chrome installations. The extension stores nothing else.
+The extension stores your selected download mode (Original, Convert, or Both) using Chrome's built-in `storage.sync` API. If you are signed in to Chrome with sync enabled, Chrome may sync this single setting across your own installations. The extension stores nothing else.
 
 ## Network requests
 
-The extension makes web requests only to:
+The extension makes HTTPS requests only to:
 
-- `*.wiktionary.org`, to query the MediaWiki API and find audio files on the entry you are viewing
+- `*.wiktionary.org`, to query the MediaWiki API and find audio on the entry you are viewing
 - `upload.wikimedia.org`, to fetch audio files when you click Preview or Download
 
-The extension does not contact any analytics, advertising, error reporting, or conversion server.
+Requests are sent without cookies or credentials. After any redirect, the response URL is rechecked against this allowlist; a redirect to anywhere else is rejected and the bytes discarded. The extension contacts no analytics, advertising, or third-party server.
 
-## Conversion location
+## Audio processing
 
-WAV conversion uses vendored FFmpeg.wasm, which runs inside your browser on your own machine. Audio bytes are not uploaded to a conversion server.
+WAV conversion runs in your browser using a bundled copy of FFmpeg.wasm. Audio bytes are never uploaded. The FFmpeg code ships inside the extension package itself; nothing is loaded from the network at runtime.
 
-## Permission details
+## Permissions
 
-- `downloads`, so the extension can save files to your Downloads folder when you click Download. The extension does not access files you have already downloaded.
-- `storage`, to remember your Original, Convert, or Both mode preference.
-- `offscreen`, to host the local FFmpeg.wasm conversion worker.
-- Host access to `*.wiktionary.org` and `*.wikimedia.org`, to fetch the page's audio file list and the audio files themselves. The extension does not request access to other websites.
+- `downloads`: save files to your Downloads folder when you click Download. The extension does not read your existing downloads.
+- `storage`: remember your mode preference.
+- `offscreen`: host the local FFmpeg.wasm worker.
+- Host access limited to `*.wiktionary.org` and `*.wikimedia.org`. The extension cannot read or modify any other website.
 
 ## Source code
 
-The extension is open source: <https://github.com/jhnwnstd/wiktionary-audio-extension-chrome>. You can inspect the source code to confirm what the extension does.
+The extension is open source: <https://github.com/jhnwnstd/wiktionary-audio-extension-chrome>. You can read the source to confirm what the extension does and does not touch.
 
 ## Contact
 
