@@ -311,6 +311,48 @@ test.describe('content script audio discovery', () => {
     await expect(btnAll).toContainText(/Downloaded/, { timeout: 5_000 });
   });
 
+  // Symmetric direction: clicking Download All should flip every individual
+  // row's button to Downloaded too, mirroring the all-individual-flips-the-
+  // batch behavior above.
+  test('Download All flips each row\'s individual button to Downloaded', async () => {
+    const URL_A = 'https://upload.wikimedia.org/x/En-us-water.ogg';
+    const URL_B = 'https://upload.wikimedia.org/x/En-uk-water.ogg';
+    const FAKE_OGG = Buffer.from([0x4f, 0x67, 0x67, 0x53, 0x00, 0x02, 0x00, 0x00]);
+    await context.route(URL_A, (route) => route.fulfill({ status: 200, contentType: 'audio/ogg', body: FAKE_OGG }));
+    await context.route(URL_B, (route) => route.fulfill({ status: 200, contentType: 'audio/ogg', body: FAKE_OGG }));
+    await context.route('**/w/api.php**', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(actionApiResponse([
+          { title: 'File:En-us-water.ogg', url: URL_A },
+          { title: 'File:En-uk-water.ogg', url: URL_B },
+        ])),
+      })
+    );
+
+    const page = await context.newPage();
+    await page.goto(WATER_URL);
+    await expect(page.getByTestId('wad-panel')).toBeVisible();
+
+    const btnA = page.getByTestId('wad-download').nth(0);
+    const btnB = page.getByTestId('wad-download').nth(1);
+    const btnAll = page.getByTestId('wad-download-all');
+
+    // Before: nothing is Downloaded.
+    await expect(btnA).not.toContainText(/Downloaded/);
+    await expect(btnB).not.toContainText(/Downloaded/);
+
+    await btnAll.click();
+
+    // Download All shows 2/2 Downloaded once everything settles.
+    await expect(btnAll).toContainText(/2\/2/, { timeout: 30_000 });
+
+    // Symmetric flip: every row's individual button is also Downloaded.
+    await expect(btnA).toContainText(/Downloaded/);
+    await expect(btnB).toContainText(/Downloaded/);
+  });
+
   // Regression: minimize >2s -> background evicts cached bytes and aborts
   // in-flight prefetch. Re-opening after dismissal triggers a fresh prefetch.
   // This pins the "user signaled disengagement" cleanup path.

@@ -111,8 +111,11 @@ async function downloadFile(item, button) {
  * @param {AudioItem[]} items
  * @param {HTMLButtonElement} button
  * @param {string} pageTitle
+ * @param {(item: AudioItem) => void} [onItemSuccess]  per-item success hook;
+ *   createUI uses this to flip the row's individual Download button green,
+ *   mirroring the click-each-then-all-flips direction.
  */
-async function downloadAll(items, button, pageTitle) {
+async function downloadAll(items, button, pageTitle, onItemSuccess) {
   const mode = await getMode();
   if (!mode) return;
   const subModes = subModesFor(mode);
@@ -125,7 +128,10 @@ async function downloadAll(items, button, pageTitle) {
     const settled = await Promise.allSettled(
       subModes.map(m => sendDownload(items[i], m, folder))
     );
-    if (settled.every(s => s.status === 'fulfilled' && s.value?.ok)) okItems++;
+    if (settled.every(s => s.status === 'fulfilled' && s.value?.ok)) {
+      okItems++;
+      if (onItemSuccess) onItemSuccess(items[i]);
+    }
   }
 
   const summary = `${okItems}/${items.length} ${t.downloaded}`;
@@ -273,10 +279,14 @@ export function createUI(items, pageTitle) {
   body.style.cssText = BODY_STYLE;
 
   // When every per-item download succeeds, the Download All button auto-
-  // flips to "Downloaded". Keyed on the AudioItem object so there's no
-  // integer index a page could spoof.
+  // flips to "Downloaded"; symmetrically, when Download All succeeds for
+  // an item, that row's button auto-flips. Both directions use this Set
+  // (keyed on AudioItem object — no integer index a page could spoof) and
+  // the itemButtons map below.
   /** @type {Set<unknown>} */
   const downloadedItems = new Set();
+  /** @type {Map<AudioItem, HTMLButtonElement>} */
+  const itemButtons = new Map();
   /** @type {HTMLButtonElement | null} */
   let batchBtn = null;
 
@@ -305,6 +315,7 @@ export function createUI(items, pageTitle) {
     dlBtn.setAttribute('data-testid', 'wad-download');
     dlBtn.style.cssText = DOWNLOAD_STYLE;
     dlBtn.textContent = t.downloadButton;
+    itemButtons.set(item, dlBtn);
     dlBtn.addEventListener('click', (e) => {
       if (!e.isTrusted) return;
       downloadFile(item, dlBtn).then((ok) => {
@@ -333,7 +344,11 @@ export function createUI(items, pageTitle) {
     btn.textContent = t.downloadAllButton;
     btn.addEventListener('click', (e) => {
       if (!e.isTrusted) return;
-      downloadAll(items, btn, pageTitle);
+      downloadAll(items, btn, pageTitle, (item) => {
+        downloadedItems.add(item);
+        const rowBtn = itemButtons.get(item);
+        if (rowBtn) showFeedback(rowBtn, t.downloaded, 'success');
+      });
     });
     footer.appendChild(btn);
     panel.appendChild(footer);
