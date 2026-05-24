@@ -5,11 +5,12 @@
   "main": "background.js",
   "scripts": {
     "lint": "eslint src/**/*.js tests/**/*.js scripts/**/*.js",
+    "typecheck": "tsc -p jsconfig.json",
     "test": "node tests/unit/test.js",
     "test:e2e": "playwright test --config=tests/playwright.config.js --grep-invert \"@live|@profile\"",
     "test:live": "playwright test --config=tests/playwright.config.js --grep @live",
     "test:profile": "playwright test --config=tests/playwright.config.js --grep @profile",
-    "check": "npm run lint && npm run test",
+    "check": "npm run lint && npm run typecheck && npm run test",
     "test:all": "npm run check && npm run test:e2e",
     "version": "node scripts/sync-manifest-version.js && git add src/manifest.json"
   },
@@ -28,6 +29,7 @@
   "devDependencies": {
     "@playwright/test": "^1.60.0",
     "eslint": "^10.1.0",
-    "globals": "^17.4.0"
+    "globals": "^17.4.0",
+    "typescript": "^5.9.3"
   }
 }

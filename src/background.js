@@ -185,16 +185,17 @@ async function prewarmFFmpeg() {
 }
 
 /**
- * Send a TRANSCODE request to the offscreen FFmpeg worker. Accepts either
- * a URL (offscreen fetches) or an ArrayBuffer of pre-fetched bytes
- * (offscreen skips its own fetch). The bytes path is used when the
- * prefetch cache has the audio ready.
+ * Send a TRANSCODE request to the offscreen FFmpeg worker. `srcUrl` may be
+ * either a Wikimedia allowlisted https URL (offscreen fetches over the
+ * network, browser HTTP cache permitting) or a SW-created blob: URL
+ * (offscreen fetches from the extension origin, zero-copy via the browser's
+ * Blob registry). Either way no audio bytes traverse the runtime port.
  *
- * @param {string | ArrayBuffer} src
+ * @param {string} srcUrl
  * @param {string} baseName  filename without extension; offscreen appends `.wav`
- * @returns {Promise<{ filename: string, arrayBuffer: ArrayBuffer }>}
+ * @returns {Promise<{ filename: string, blobUrl: string, byteLength: number }>}
  */
-async function transcodeToWav(src, baseName) {
+async function transcodeToWav(srcUrl, baseName) {
   log('[Background] Starting transcode...');
   await ensureOffscreen();
 
@@ -214,17 +215,7 @@ async function transcodeToWav(src, baseName) {
         byteLength: msg.byteLength || 0,
       });
     });
-
-    // chrome.runtime port serialization does NOT preserve typed array
-    // shape in current Chrome (Uint8Array arrives as a plain Object), so
-    // we materialize to a number Array. This is the documented "Rust/C"
-    // smell from the security review; the right fix is a Blob URL handoff
-    // that avoids marshaling the bytes through the message channel at all.
-    // Tracked as a follow-up because correct trumps optimal here.
-    const payload = src instanceof ArrayBuffer
-      ? { type: 'TRANSCODE', srcBytes: Array.from(new Uint8Array(src)), outBase: baseName }
-      : { type: 'TRANSCODE', srcUrl: src, outBase: baseName };
-    port.postMessage(payload);
+    port.postMessage({ type: 'TRANSCODE', srcUrl, outBase: baseName });
   });
 }
 
@@ -279,7 +270,10 @@ function isAllowedAudioUrl(url) {
   } catch { return false; }
 }
 
-/** @type {Map<string, { bytes: ArrayBuffer, lastUsedMs: number }>} */
+// Insertion-order LRU: Map iterates in insertion order, so the first key is
+// the oldest. takeCached() refreshes recency by delete+re-insert, eviction
+// pops the head. No timestamp comparison and no full-Map scan per eviction.
+/** @type {Map<string, ArrayBuffer>} */
 const audioCache = new Map();
 let audioCacheBytes = 0;
 
@@ -303,7 +297,7 @@ const inflightPrefetches = new Map();
 
 const TRANSCODED_CACHE_MAX_BYTES = 20 * 1024 * 1024;
 
-/** @type {Map<string, { blobUrl: string, filename: string, byteLength: number, lastUsedMs: number }>} */
+/** @type {Map<string, { blobUrl: string, filename: string, byteLength: number }>} */
 const transcodedCache = new Map();
 let transcodedCacheBytes = 0;
 
@@ -342,13 +336,16 @@ function dismissUrl(url) {
 
 /**
  * @param {string} url
- * @returns {{ blobUrl: string, filename: string } | null}
+ * @returns {{ blobUrl: string, filename: string, byteLength: number } | null}
  */
 function takeTranscoded(url) {
   const entry = transcodedCache.get(url);
   if (!entry) return null;
-  entry.lastUsedMs = Date.now();
-  return { blobUrl: entry.blobUrl, filename: entry.filename };
+  // Refresh recency: delete + re-insert moves the key to the tail of the
+  // insertion order so eviction targets older URLs first.
+  transcodedCache.delete(url);
+  transcodedCache.set(url, entry);
+  return { blobUrl: entry.blobUrl, filename: entry.filename, byteLength: entry.byteLength };
 }
 
 /**
@@ -378,43 +375,64 @@ function addTranscoded(url, filename, blobUrl, byteLength) {
     return;
   }
   while (transcodedCacheBytes + byteLength > TRANSCODED_CACHE_MAX_BYTES && transcodedCache.size > 0) {
-    let oldestUrl = null;
-    let oldestTs = Infinity;
-    for (const [u, e] of transcodedCache) {
-      if (e.lastUsedMs < oldestTs) { oldestUrl = u; oldestTs = e.lastUsedMs; }
-    }
-    if (!oldestUrl) break;
+    const oldestUrl = transcodedCache.keys().next().value;
+    if (oldestUrl === undefined) break;
     const old = transcodedCache.get(oldestUrl);
+    if (!old) break;
     transcodedCacheBytes -= old.byteLength;
     revokeBlobInOffscreen(old.blobUrl);
     transcodedCache.delete(oldestUrl);
   }
-  transcodedCache.set(url, { blobUrl, filename, byteLength, lastUsedMs: Date.now() });
+  transcodedCache.set(url, { blobUrl, filename, byteLength });
   transcodedCacheBytes += byteLength;
 }
 
 /**
- * Transcode `src` (URL or bytes) to WAV and cache by `url`. Dedupes by url
- * so concurrent calls (e.g., user click + speculative) share one ffmpeg.exec.
- * If the URL is already in the WAV cache, returns it directly without
- * touching the offscreen document.
+ * Transcode `url` to WAV and cache the result. Dedupes by url so concurrent
+ * calls (e.g., user click + speculative) share one ffmpeg.exec. Returns
+ * immediately if the WAV is already cached. If we have the source bytes in
+ * audioCache, hand them to offscreen via a SW-created blob: URL: zero-copy
+ * (no port marshaling, no extra network fetch). Otherwise pass the original
+ * https URL and offscreen fetches it (usually a browser HTTP cache hit
+ * from our earlier prefetch).
  *
  * @param {string} url  cache key
- * @param {string | ArrayBuffer} src  passed to transcodeToWav
  * @param {string} baseName
- * @returns {Promise<{ filename: string, arrayBuffer: ArrayBuffer }>}
+ * @returns {Promise<{ filename: string, blobUrl: string, byteLength: number }>}
  */
-async function transcodeForUrl(url, src, baseName) {
+async function transcodeForUrl(url, baseName) {
   const pre = takeTranscoded(url);
-  if (pre) return { filename: pre.filename, blobUrl: pre.blobUrl };
+  if (pre) return pre;
 
   const existing = transcodeInflight.get(url);
   if (existing) return existing;
 
   const promise = (async () => {
-    const result = await transcodeToWav(src, baseName);
-    addTranscoded(url, result.filename, result.blobUrl, result.byteLength);
-    return result;
+    const cached = takeCached(url);
+    let srcUrl = url;
+    let toRevoke = null;
+    if (cached) {
+      // Wrap the cached bytes as a Blob and hand offscreen the URL. The
+      // browser's Blob registry is shared across same-origin contexts in
+      // the extension (chrome-extension://<id>), so offscreen's fetch
+      // resolves locally without a network round trip or a typed-array
+      // serialization across the runtime port.
+      const blob = new Blob([cached], { type: 'application/octet-stream' });
+      srcUrl = URL.createObjectURL(blob);
+      toRevoke = srcUrl;
+    }
+    try {
+      const result = await transcodeToWav(srcUrl, baseName);
+      addTranscoded(url, result.filename, result.blobUrl, result.byteLength);
+      return result;
+    } finally {
+      // Offscreen has already read the bytes into its heap by the time we
+      // get the ack (success or failure). Release the blob URL so the
+      // underlying Blob can be GC'd in this context.
+      if (toRevoke) {
+        try { URL.revokeObjectURL(toRevoke); } catch { /* already gone */ }
+      }
+    }
   })();
   transcodeInflight.set(url, promise);
   try {
@@ -436,31 +454,34 @@ async function transcodeForUrl(url, src, baseName) {
 async function triggerSpeculativeTranscode(url, downloadName) {
   if (transcodedCache.has(url)) return;
   if (transcodeInflight.has(url)) return;
-  const sourceBytes = takeCached(url);
-  if (!sourceBytes) return;
-  if (sourceBytes.byteLength > PER_FILE_MAX_BYTES) return;
+  // Gate on prefetch completion: only speculate after the source bytes have
+  // landed in audioCache. This is our signal that the user is engaging
+  // (panel rendered, prefetch completed) and that transcodeForUrl will
+  // take the fast Blob-URL handoff path.
+  if (!audioCache.has(url)) return;
 
   const baseName = sanitizeFilename(String(downloadName || '').replace(/\.[^.]+$/, ''));
   log('[Background] Speculative transcode:', baseName);
   try {
-    await transcodeForUrl(url, sourceBytes, baseName);
+    await transcodeForUrl(url, baseName);
   } catch (e) {
     logError('[Background] Speculative transcode failed:', e?.message || e);
   }
 }
 
 /**
- * Look up a cached entry and bump its lastUsed timestamp. Returns the bytes
- * or null. Touching on read gives us LRU eviction without a separate access
- * counter.
+ * Look up a cached entry and refresh recency. Returns the bytes or null.
+ * Delete + re-insert moves the URL to the tail of insertion order so
+ * eviction (which pops the head) targets older entries first.
  * @param {string} url
  * @returns {ArrayBuffer | null}
  */
 function takeCached(url) {
-  const entry = audioCache.get(url);
-  if (!entry) return null;
-  entry.lastUsedMs = Date.now();
-  return entry.bytes;
+  const bytes = audioCache.get(url);
+  if (!bytes) return null;
+  audioCache.delete(url);
+  audioCache.set(url, bytes);
+  return bytes;
 }
 
 /**
@@ -480,16 +501,14 @@ function addToCache(url, bytes) {
   // that lands here is guaranteed below the limit.
   if (bytes.byteLength > PER_FILE_MAX_BYTES) return;
   while (audioCacheBytes + bytes.byteLength > PREFETCH_CACHE_MAX_BYTES && audioCache.size > 0) {
-    let oldestUrl = null;
-    let oldestTs = Infinity;
-    for (const [u, e] of audioCache) {
-      if (e.lastUsedMs < oldestTs) { oldestUrl = u; oldestTs = e.lastUsedMs; }
-    }
-    if (!oldestUrl) break;
-    audioCacheBytes -= audioCache.get(oldestUrl).bytes.byteLength;
+    const oldestUrl = audioCache.keys().next().value;
+    if (oldestUrl === undefined) break;
+    const old = audioCache.get(oldestUrl);
+    if (!old) break;
+    audioCacheBytes -= old.byteLength;
     audioCache.delete(oldestUrl);
   }
-  audioCache.set(url, { bytes, lastUsedMs: Date.now() });
+  audioCache.set(url, bytes);
   audioCacheBytes += bytes.byteLength;
 }
 
@@ -524,10 +543,13 @@ async function prefetchAudio(items) {
   )).filter(u => !audioCache.has(u) && !inflightPrefetches.has(u));
 
   if (todo.length) {
-    const queue = todo.slice();
+    // Shared cursor across workers. Array.shift() would be O(n) per dequeue
+    // because it re-indexes the whole array; a cursor is O(1) and avoids
+    // the per-message churn on busy pages.
+    let cursor = 0;
     const workers = Array.from({ length: PREFETCH_CONCURRENCY }, async () => {
-      while (queue.length) {
-        const url = queue.shift();
+      while (cursor < todo.length) {
+        const url = todo[cursor++];
         if (!url) continue;
         const controller = new AbortController();
         inflightPrefetches.set(url, controller);
@@ -596,7 +618,7 @@ function dismissUrls(urls) {
     if (ctrl) ctrl.abort();
     const entry = audioCache.get(url);
     if (entry) {
-      audioCacheBytes -= entry.bytes.byteLength;
+      audioCacheBytes -= entry.byteLength;
       audioCache.delete(url);
     }
     const trans = transcodedCache.get(url);
@@ -758,44 +780,46 @@ chrome.runtime.onMessage.addListener(
   const baseName = sanitizeFilename(originalFilename.replace(/\.[^.]+$/, ''));
 
   (async () => {
-    const cached = takeCached(url);
-    /** @type {chrome.downloads.DownloadOptions} */
+    /** @type {{ url: string, filename: string, saveAs: boolean }} */
     let opts;
     if (mode === 'convert') {
       // transcodeForUrl returns immediately if the WAV is cached (speculative
-      // pre-transcode already ran), awaits any in-flight transcode for this
-      // URL, or runs a fresh transcode otherwise. The result is a Blob URL
-      // we pass straight to chrome.downloads; no byte marshaling through
-      // base64/data URL.
+      // pre-transcode already ran), awaits any in-flight transcode, or kicks
+      // off a fresh one. Internally it uses a SW-created blob: URL to hand
+      // prefetched bytes to offscreen, so no audio data ever traverses the
+      // runtime port.
       log('[Background] Converting:', originalFilename, folder ? `-> ${folder}/` : '');
-      const { filename, blobUrl } = await transcodeForUrl(url, cached || url, baseName);
+      const { filename, blobUrl } = await transcodeForUrl(url, baseName);
       opts = {
         url: blobUrl,
         filename: pathWithFolder(folder, filename),
         saveAs: false,
       };
-    } else if (cached && cached.byteLength <= DATA_URL_THRESHOLD_BYTES) {
-      // Original mode with small cached bytes: data URL is cheap for small
-      // payloads and saves the network round-trip. application/octet-stream
-      // is fine; the saved file's extension comes from `filename`, not the
-      // data URL's MIME.
-      log('[Background] Downloading original (cached, data URL):', originalFilename, folder ? `-> ${folder}/` : '');
-      opts = {
-        url: `data:application/octet-stream;base64,${arrayBufferToBase64(cached)}`,
-        filename: pathWithFolder(folder, originalFilename),
-        saveAs: false,
-      };
     } else {
-      // Original mode for large files (or no cache): pass the source URL.
-      // chrome.downloads' fetch typically hits the browser HTTP cache from
-      // our earlier prefetch, so we avoid the base64 expansion + giant data
-      // URL string for free.
-      log('[Background] Downloading original:', originalFilename, folder ? `-> ${folder}/` : '');
-      opts = {
-        url,
-        filename: pathWithFolder(folder, originalFilename),
-        saveAs: false,
-      };
+      const cached = takeCached(url);
+      if (cached && cached.byteLength <= DATA_URL_THRESHOLD_BYTES) {
+        // Original mode with small cached bytes: data URL is cheap for small
+        // payloads and saves the network round-trip. application/octet-stream
+        // is fine; the saved file's extension comes from `filename`, not the
+        // data URL's MIME.
+        log('[Background] Downloading original (cached, data URL):', originalFilename, folder ? `-> ${folder}/` : '');
+        opts = {
+          url: `data:application/octet-stream;base64,${arrayBufferToBase64(cached)}`,
+          filename: pathWithFolder(folder, originalFilename),
+          saveAs: false,
+        };
+      } else {
+        // Original mode for large files (or no cache): pass the source URL.
+        // chrome.downloads' fetch typically hits the browser HTTP cache from
+        // our earlier prefetch, so we avoid the base64 expansion + giant data
+        // URL string for free.
+        log('[Background] Downloading original:', originalFilename, folder ? `-> ${folder}/` : '');
+        opts = {
+          url,
+          filename: pathWithFolder(folder, originalFilename),
+          saveAs: false,
+        };
+      }
     }
 
     // chrome.downloads.download resolves once the download is INITIATED

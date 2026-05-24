@@ -10,14 +10,18 @@ const logError = console.error.bind(console);
 const INPUT_MAX_BYTES = 5 * 1024 * 1024;
 const OUTPUT_MAX_BYTES = 16 * 1024 * 1024;
 
-// Allowlist for srcUrl when offscreen fetches directly (no cached bytes
-// path). Mirror of background.js / content-script.js. Mirrored locally
-// because offscreen is a privileged context that should not implicitly
-// trust a URL just because background forwarded it.
+// Allowlist for srcUrl. Two acceptable shapes:
+//   * https://upload.wikimedia.org/...  (offscreen fetches over the network)
+//   * blob:chrome-extension://<our-id>/<uuid>  (SW handed us prefetched
+//     bytes via the Blob registry; fetch resolves locally, no network)
+// Mirrored locally because offscreen is a privileged context and should not
+// implicitly trust a URL just because background forwarded it.
 const AUDIO_HOST_ALLOWLIST = new Set(['upload.wikimedia.org']);
+const EXTENSION_BLOB_PREFIX = `blob:${chrome.runtime.getURL('').replace(/\/$/, '')}/`;
 /** @param {string} url */
-function isAllowedAudioUrl(url) {
+function isAllowedSourceUrl(url) {
   if (typeof url !== 'string') return false;
+  if (url.startsWith(EXTENSION_BLOB_PREFIX)) return true;
   try {
     const u = new URL(url);
     return u.protocol === 'https:' && AUDIO_HOST_ALLOWLIST.has(u.hostname);
@@ -144,23 +148,13 @@ chrome.runtime.onConnect.addListener(port => {
       return;
     }
 
-    const { srcUrl, srcBytes, outBase } = msg;
-    // srcBytes comes through as a number Array (chrome.runtime port
-    // serialization doesn't preserve typed-array shape in current Chrome).
-    const hasBytes = Array.isArray(srcBytes);
-    if (!srcUrl && !hasBytes) {
-      port.postMessage({ ok: false, error: 'No audio source provided' });
-      return;
-    }
-    // Defense in depth. Background already enforces these but a privileged
-    // context shouldn't trust an upstream caller; bad input rejected here
-    // saves FFmpeg from ever seeing it.
-    if (srcUrl && !isAllowedAudioUrl(srcUrl)) {
+    const { srcUrl, outBase } = msg;
+    // Defense in depth. Background already validates but a privileged context
+    // shouldn't trust an upstream caller. Acceptable URLs are Wikimedia
+    // https or a blob: URL whose origin matches our extension (SW handed us
+    // prefetched bytes via the browser's Blob registry).
+    if (!isAllowedSourceUrl(srcUrl)) {
       port.postMessage({ ok: false, error: 'srcUrl not allowed' });
-      return;
-    }
-    if (hasBytes && srcBytes.length > INPUT_MAX_BYTES) {
-      port.postMessage({ ok: false, error: 'srcBytes too large' });
       return;
     }
 
@@ -169,27 +163,24 @@ chrome.runtime.onConnect.addListener(port => {
 
     await serializeTranscode(async () => {
       try {
-        // Two paths:
-        //   srcBytes: background's prefetch cache already has the bytes, so
-        //     skip the fetch. Wrap as Uint8Array; FFmpeg loads in parallel.
-        //   srcUrl: no cached bytes. Fetch concurrently with FFmpeg load.
-        const fetchBytes = hasBytes
-          ? Promise.resolve(new Uint8Array(srcBytes))
-          : (async () => {
-              log('[Offscreen] Fetching:', srcUrl.substring(0, 60));
-              // Allow Wikimedia's internal redirects, but enforce the
-              // allowlist against the final response.url so a redirect
-              // chain can't sneak in bytes from outside the allowed origin.
-              const response = await fetch(srcUrl);
-              if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
-              if (!isAllowedAudioUrl(response.url)) throw new Error('redirect outside allowlist');
-              const declared = parseInt(response.headers.get('Content-Length') || '0', 10);
-              if (declared > INPUT_MAX_BYTES) throw new Error('declared size over limit');
-              const bytes = new Uint8Array(await response.arrayBuffer());
-              if (!bytes.length) throw new Error('Empty audio data');
-              if (bytes.length > INPUT_MAX_BYTES) throw new Error('input over limit');
-              return bytes;
-            })();
+        // Fetch concurrently with FFmpeg load. The fetch may hit the network
+        // (Wikimedia https) or resolve locally from the Blob registry
+        // (blob: URL handoff from SW); either way the per-file caps apply.
+        const fetchBytes = (async () => {
+          log('[Offscreen] Fetching:', srcUrl.substring(0, 60));
+          // Allow Wikimedia's internal redirects, but enforce the allowlist
+          // against the final response.url so a redirect chain can't sneak
+          // in bytes from outside the allowed origin or shape.
+          const response = await fetch(srcUrl);
+          if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
+          if (!isAllowedSourceUrl(response.url)) throw new Error('redirect outside allowlist');
+          const declared = parseInt(response.headers.get('Content-Length') || '0', 10);
+          if (declared > INPUT_MAX_BYTES) throw new Error('declared size over limit');
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          if (!bytes.length) throw new Error('Empty audio data');
+          if (bytes.length > INPUT_MAX_BYTES) throw new Error('input over limit');
+          return bytes;
+        })();
 
         const [audioBytes] = await Promise.all([fetchBytes, loadFFmpeg()]);
         await ffmpeg.writeFile(inName, audioBytes);
