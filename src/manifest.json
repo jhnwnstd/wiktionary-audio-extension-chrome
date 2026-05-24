@@ -27,7 +27,7 @@
     "offscreen"
   ],
   "host_permissions": [
-    "*://*.wiktionary.org/*",
+    "https://*.wiktionary.org/*",
     "https://upload.wikimedia.org/*"
   ],
   "cross_origin_embedder_policy": {
@@ -41,7 +41,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["*://*.wiktionary.org/*"],
+      "matches": ["https://*.wiktionary.org/*"],
       "js": ["content-script.js"],
       "run_at": "document_end"
     }

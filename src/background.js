@@ -215,6 +215,12 @@ async function transcodeToWav(src, baseName) {
       });
     });
 
+    // chrome.runtime port serialization does NOT preserve typed array
+    // shape in current Chrome (Uint8Array arrives as a plain Object), so
+    // we materialize to a number Array. This is the documented "Rust/C"
+    // smell from the security review; the right fix is a Blob URL handoff
+    // that avoids marshaling the bytes through the message channel at all.
+    // Tracked as a follow-up because correct trumps optimal here.
     const payload = src instanceof ArrayBuffer
       ? { type: 'TRANSCODE', srcBytes: Array.from(new Uint8Array(src)), outBase: baseName }
       : { type: 'TRANSCODE', srcUrl: src, outBase: baseName };
@@ -304,6 +310,15 @@ let transcodedCacheBytes = 0;
 /** @type {Map<string, Promise<{ filename: string, blobUrl: string, byteLength: number }>>} */
 const transcodeInflight = new Map();
 
+// Tombstones for URLs the user has dismissed since their last prefetch.
+// A speculative transcode in flight when PANEL_DISMISSED arrives can't
+// be cancelled (FFmpeg.wasm has no abort), so it will run to completion;
+// without this guard it would addTranscoded() the result and silently
+// repopulate the cache the user just asked us to clear. A subsequent
+// PREFETCH_AUDIO for the same URL clears the tombstone (re-engagement).
+/** @type {Set<string>} */
+const dismissedUrls = new Set();
+
 /**
  * @param {string} url
  * @returns {{ blobUrl: string, filename: string } | null}
@@ -326,6 +341,12 @@ function takeTranscoded(url) {
  * @param {number} byteLength
  */
 function addTranscoded(url, filename, blobUrl, byteLength) {
+  if (dismissedUrls.has(url)) {
+    // The user dismissed this page after we started the transcode. Don't
+    // resurrect what they explicitly evicted; just release the blob.
+    revokeBlobInOffscreen(blobUrl);
+    return;
+  }
   if (transcodedCache.has(url)) {
     // Already cached. Discard the new blob URL since we won't store it.
     revokeBlobInOffscreen(blobUrl);
@@ -396,9 +417,6 @@ async function triggerSpeculativeTranscode(url, downloadName) {
   if (transcodeInflight.has(url)) return;
   const sourceBytes = takeCached(url);
   if (!sourceBytes) return;
-  // Defense in depth. addToCache already enforces this on the way in, but
-  // we re-check here so the speculative path explicitly upholds the cap
-  // independent of how the bytes got into the cache.
   if (sourceBytes.byteLength > PER_FILE_MAX_BYTES) return;
 
   const baseName = sanitizeFilename(String(downloadName || '').replace(/\.[^.]+$/, ''));
@@ -432,6 +450,10 @@ function takeCached(url) {
  */
 function addToCache(url, bytes) {
   if (audioCache.has(url)) return;
+  // If the user dismissed this URL since the fetch began, don't repopulate
+  // the cache they just asked us to evict. (PANEL_DISMISSED also aborts
+  // the controller, but that's racy; this is the deterministic check.)
+  if (dismissedUrls.has(url)) return;
   // Hard per-file cap. Invariant enforced here even though prefetchAudio
   // also checks; addToCache is the single ingress to audioCache so anything
   // that lands here is guaranteed below the limit.
@@ -461,6 +483,13 @@ function addToCache(url, bytes) {
 async function prefetchAudio(items) {
   if (!Array.isArray(items) || !items.length) return;
 
+  // PREFETCH_AUDIO is the re-engagement signal: any URL the user dismissed
+  // earlier is now in scope again. Clear its tombstone so an addToCache or
+  // addTranscoded result can land normally.
+  for (const i of items) {
+    if (i && typeof i.url === 'string') dismissedUrls.delete(i.url);
+  }
+
   // Skip URLs already cached OR already in flight, AND drop anything
   // outside the Wikimedia allowlist. The inflight check prevents repeated
   // PREFETCH_AUDIO messages from spawning duplicate fetches and overwriting
@@ -480,8 +509,18 @@ async function prefetchAudio(items) {
         const controller = new AbortController();
         inflightPrefetches.set(url, controller);
         try {
-          const r = await fetch(url, { credentials: 'omit', signal: controller.signal });
+          // Wikimedia uses internal redirects (e.g., CDN routing), so
+          // redirect: 'follow' is necessary for the fetch to land at all.
+          // The security guarantee comes from re-checking the final
+          // response.url: an attacker-controlled redirect chain that
+          // bounces through allowed Wikimedia URLs and ends elsewhere
+          // would fail this check and the bytes get discarded.
+          const r = await fetch(url, {
+            credentials: 'omit',
+            signal: controller.signal,
+          });
           if (!r.ok) continue;
+          if (!isAllowedAudioUrl(r.url)) continue;
           // Cheap defense against pathological inputs: bail before reading
           // the body if Wikimedia reports a size larger than any real
           // pronunciation file. Saves bandwidth and prevents cache thrash.
@@ -525,6 +564,11 @@ async function prefetchAudio(items) {
  */
 function dismissUrls(urls) {
   for (const url of urls) {
+    if (typeof url !== 'string') continue;
+    // Tombstone the URL so any in-flight prefetch or speculative transcode
+    // that completes after this point won't repopulate the cache we're
+    // about to clear. A subsequent PREFETCH_AUDIO clears the tombstone.
+    dismissedUrls.add(url);
     const ctrl = inflightPrefetches.get(url);
     if (ctrl) ctrl.abort();
     const entry = audioCache.get(url);
@@ -532,11 +576,6 @@ function dismissUrls(urls) {
       audioCacheBytes -= entry.bytes.byteLength;
       audioCache.delete(url);
     }
-    // Also evict the speculative WAV. We can't cancel an in-flight FFmpeg
-    // exec (the wasm worker doesn't support it), so an in-flight speculative
-    // transcode will run to completion; addTranscoded then no-ops on the
-    // already-deleted entry (and revokes its blob URL), and the next
-    // dismiss/eviction reclaims.
     const trans = transcodedCache.get(url);
     if (trans) {
       transcodedCacheBytes -= trans.byteLength;
@@ -614,11 +653,14 @@ function isAllowedSender(sender) {
   // Extension pages (popup, offscreen) have a URL but no tab.
   const extPrefix = chrome.runtime.getURL('');
   if (typeof sender.url === 'string' && sender.url.startsWith(extPrefix)) return true;
-  // Content scripts have sender.tab.url. Only accept Wiktionary tabs.
+  // Content scripts: require HTTPS Wiktionary tab. HTTP would mean either
+  // a misconfigured site or a downgrade attack, neither of which we want
+  // to grant the privileged background surface to.
   const tabUrl = sender.tab?.url;
   if (typeof tabUrl !== 'string') return false;
   try {
-    return /\.wiktionary\.org$/.test(new URL(tabUrl).hostname);
+    const u = new URL(tabUrl);
+    return u.protocol === 'https:' && /\.wiktionary\.org$/.test(u.hostname);
   } catch { return false; }
 }
 

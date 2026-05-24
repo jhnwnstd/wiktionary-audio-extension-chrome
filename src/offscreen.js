@@ -145,7 +145,10 @@ chrome.runtime.onConnect.addListener(port => {
     }
 
     const { srcUrl, srcBytes, outBase } = msg;
-    if (!srcUrl && !Array.isArray(srcBytes)) {
+    // srcBytes comes through as a number Array (chrome.runtime port
+    // serialization doesn't preserve typed-array shape in current Chrome).
+    const hasBytes = Array.isArray(srcBytes);
+    if (!srcUrl && !hasBytes) {
       port.postMessage({ ok: false, error: 'No audio source provided' });
       return;
     }
@@ -156,7 +159,7 @@ chrome.runtime.onConnect.addListener(port => {
       port.postMessage({ ok: false, error: 'srcUrl not allowed' });
       return;
     }
-    if (Array.isArray(srcBytes) && srcBytes.length > INPUT_MAX_BYTES) {
+    if (hasBytes && srcBytes.length > INPUT_MAX_BYTES) {
       port.postMessage({ ok: false, error: 'srcBytes too large' });
       return;
     }
@@ -170,12 +173,16 @@ chrome.runtime.onConnect.addListener(port => {
         //   srcBytes: background's prefetch cache already has the bytes, so
         //     skip the fetch. Wrap as Uint8Array; FFmpeg loads in parallel.
         //   srcUrl: no cached bytes. Fetch concurrently with FFmpeg load.
-        const fetchBytes = srcBytes
+        const fetchBytes = hasBytes
           ? Promise.resolve(new Uint8Array(srcBytes))
           : (async () => {
               log('[Offscreen] Fetching:', srcUrl.substring(0, 60));
+              // Allow Wikimedia's internal redirects, but enforce the
+              // allowlist against the final response.url so a redirect
+              // chain can't sneak in bytes from outside the allowed origin.
               const response = await fetch(srcUrl);
               if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
+              if (!isAllowedAudioUrl(response.url)) throw new Error('redirect outside allowlist');
               const declared = parseInt(response.headers.get('Content-Length') || '0', 10);
               if (declared > INPUT_MAX_BYTES) throw new Error('declared size over limit');
               const bytes = new Uint8Array(await response.arrayBuffer());
