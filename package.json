@@ -12,6 +12,7 @@
     "test:profile": "playwright test --config=tests/playwright.config.js --grep @profile",
     "check": "npm run lint && npm run typecheck && npm run test",
     "test:all": "npm run check && npm run test:e2e",
+    "package": "bash scripts/package.sh",
     "version": "node scripts/sync-manifest-version.js && git add src/manifest.json"
   },
   "repository": {

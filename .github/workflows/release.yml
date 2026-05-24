@@ -1,0 +1,51 @@
+name: Release
+
+# Builds the installable .zip and attaches it to the GitHub release when a
+# new release is published. Also supports manual re-runs against any tag,
+# which is what we use to backfill an asset onto an existing release.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to package and upload (e.g. v1.3.4)'
+        required: true
+
+permissions:
+  contents: write  # required to upload release assets
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve target ref
+        id: ref
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build release zip
+        run: npm run package
+
+      - name: Upload to release
+        env:
+          TAG: ${{ steps.ref.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${TAG#v}"
+          gh release upload "${TAG}" \
+            "dist/wiktionary-audio-downloader-${VERSION}.zip" \
+            --clobber

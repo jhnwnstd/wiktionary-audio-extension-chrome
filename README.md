@@ -16,11 +16,11 @@ Converted output is 16-bit PCM at 48 kHz, mono, with triangular dither. The orig
 
 ## Install
 
-1. Clone the repository or download and unzip the [latest release](https://github.com/jhnwnstd/wiktionary-audio-extension-chrome/releases/latest).
-2. Open `chrome://extensions`.
-3. Enable Developer mode.
-4. Select Load unpacked.
-5. Select the `src/` folder only, not the repository root.
+1. Download `wiktionary-audio-downloader-*.zip` from the [latest release](https://github.com/jhnwnstd/wiktionary-audio-extension-chrome/releases/latest) and unzip it anywhere.
+2. Open Chrome and enter `chrome://extensions` in the address bar.
+3. Enable **Developer mode**.
+4. Click **Load unpacked**.
+5. Select the unzipped `wiktionary-audio-downloader-*` folder. The selected folder should contain `manifest.json`.
 
 ## Usage
 
@@ -52,6 +52,7 @@ npm install
 npm run check       # lint + unit tests
 npm run test:e2e    # Playwright tests against local fixtures
 npm run test:live   # live tests against real Wiktionary URLs
+npm run package     # build dist/wiktionary-audio-downloader-<version>.zip
 ```
 
 Vendored FFmpeg core: `@ffmpeg/core@0.12.10` at `src/vendor/ffmpeg/core/`. Conversion args live in `runTranscode` in `src/offscreen.js`; the live convert test verifies them against the vendored core.
