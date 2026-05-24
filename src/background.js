@@ -438,8 +438,8 @@ function isAllowedSender(sender) {
 }
 
 // Sink-side guard for the no-cache Original path. HEAD-checks the URL,
-// post-redirect host, and Content-Type so chrome.downloads doesn't fetch
-// non-audio bytes from a misbehaving upstream.
+// post-redirect host, Content-Type, and declared size so chrome.downloads
+// doesn't fetch non-audio or oversized bytes from a misbehaving upstream.
 /** @param {string} url */
 async function assertAudioAtUrl(url) {
   let head;
@@ -452,6 +452,14 @@ async function assertAudioAtUrl(url) {
   if (!isAllowedAudioUrl(head.url)) throw new Error('redirect outside allowlist');
   if (!isAudioContentType(head.headers.get('Content-Type'))) {
     throw new Error('non-audio Content-Type');
+  }
+  // Number.isFinite filters NaN/Infinity from a malformed header. Wikimedia
+  // sets Content-Length reliably on HEAD; if it's ever missing we fall
+  // through (chrome.downloads has no per-file cap to enforce, so the
+  // remaining defense is the URL allowlist + the disk-write itself).
+  const declared = parseInt(head.headers.get('Content-Length') || '0', 10);
+  if (Number.isFinite(declared) && declared > PER_FILE_MAX_BYTES) {
+    throw new Error('declared size over limit');
   }
 }
 
