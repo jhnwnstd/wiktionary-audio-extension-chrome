@@ -19,6 +19,7 @@ import { isAllowedAudioUrl } from './shared/audio-allowlist.mjs';
 import { sanitizeFilename } from './shared/sanitize-filename.mjs';
 import { pathWithFolder } from './shared/paths.mjs';
 import { ByteBoundedCache } from './shared/byte-bounded-cache.mjs';
+import { isAudioContentType } from './shared/content-type.mjs';
 
 const DEBUG = false;
 const log = DEBUG ? console.log.bind(console) : () => {};
@@ -447,10 +448,8 @@ async function prefetchAudio(items) {
           // response whose Content-Type isn't audio. Not a security guard
           // (Wikimedia is allowlisted by host), but it prevents a hypothetical
           // Wikimedia bug from landing non-audio bytes in the user's Downloads
-          // folder under an audio extension. application/ogg is included
-          // because Wikimedia serves .ogg with that legacy MIME, not audio/ogg.
-          const ct = (r.headers.get('Content-Type') || '').toLowerCase();
-          if (!ct.startsWith('audio/') && ct.split(';')[0].trim() !== 'application/ogg') continue;
+          // folder under an audio extension.
+          if (!isAudioContentType(r.headers.get('Content-Type'))) continue;
           // Cheap defense against pathological inputs: bail before reading
           // the body if Wikimedia reports a size larger than any real
           // pronunciation file. Number.isFinite filters out NaN (parseInt

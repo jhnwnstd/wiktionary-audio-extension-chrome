@@ -94,17 +94,21 @@ async function getMode() {
   if (cachedModePromise) return cachedModePromise;
   cachedModePromise = (async () => {
     // chrome.storage.sync.get can reject on transport errors (sync disabled,
-    // profile transition, quota). The missing-value path already defaults to
-    // 'original'; defaulting on rejection keeps the download button usable
-    // instead of leaving the caller with an unhandled rejection.
-    let mode = 'original';
+    // profile transition, quota). The missing-value path defaults to
+    // 'original'; on transport rejection we ALSO default to 'original' for
+    // this click so the download stays usable, but we do NOT populate
+    // cachedMode in that case. Otherwise one transient failure would pin
+    // the user to Original for the entire page session even after the
+    // user's real preference came back online.
     try {
       const got = await chrome.storage.sync.get({ mode: 'original' });
-      if (got && typeof got.mode === 'string') mode = got.mode;
-    } catch { /* fall through with 'original' */ }
-    const m = mode === 'convert' || mode === 'both' ? mode : 'original';
-    cachedMode = m;
-    return m;
+      const raw = got && typeof got.mode === 'string' ? got.mode : 'original';
+      const m = raw === 'convert' || raw === 'both' ? raw : 'original';
+      cachedMode = m;
+      return m;
+    } catch {
+      return 'original';
+    }
   })();
   try {
     return await cachedModePromise;

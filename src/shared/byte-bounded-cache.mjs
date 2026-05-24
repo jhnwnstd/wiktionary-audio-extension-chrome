@@ -4,10 +4,13 @@
  * entry byte costs -- used to be five hand-coordinated mutations across
  * peek/add/dismiss; now no path outside this class can desync the counter.
  *
- * Eviction calls the optional `onEvict(value)` callback before removing
- * the entry, so a transcoded-cache instance can revoke its blob URL
- * automatically. A raw-bytes instance passes no callback (ArrayBuffers
- * are GC'd when references drop).
+ * Eviction calls the optional `onEvict(value)` callback AFTER mutating
+ * internal state, so a throwing callback can't leave `#bytes` desynced
+ * from `#map`. A throwing onEvict propagates the error to the caller of
+ * `set` / `delete`; the cache's own invariants stay intact. The
+ * transcoded-cache instance uses this to revoke its blob URL on eviction;
+ * a raw-bytes instance passes no callback (ArrayBuffers are GC'd when
+ * references drop).
  *
  * Entries are wrapped internally as {v, b} so a single API works for both
  * ArrayBuffer payloads and richer structs.
@@ -63,6 +66,10 @@ export class ByteBoundedCache {
    * @returns {boolean}
    */
   set(url, value, byteCost) {
+    // Reject anything that would corrupt the bytes counter. NaN slips past
+    // a bare `> maxBytes` check (NaN comparisons are always false), so a
+    // NaN byteCost would otherwise land in `#bytes` and never recover.
+    if (!Number.isFinite(byteCost) || byteCost < 0) return false;
     if (this.#map.has(url)) return false;
     if (byteCost > this.#maxBytes) return false;
     while (this.#bytes + byteCost > this.#maxBytes && this.#map.size > 0) {
@@ -70,9 +77,12 @@ export class ByteBoundedCache {
       if (oldestKey === undefined) break;
       const oldest = this.#map.get(oldestKey);
       if (!oldest) break;
+      // Mutate internal state FIRST, then call onEvict. If the callback
+      // throws, `#bytes` and `#map` stay consistent and the error
+      // propagates to the caller.
       this.#bytes -= oldest.b;
-      if (this.#onEvict) this.#onEvict(oldest.v);
       this.#map.delete(oldestKey);
+      if (this.#onEvict) this.#onEvict(oldest.v);
     }
     this.#map.set(url, { v: value, b: byteCost });
     this.#bytes += byteCost;
@@ -87,9 +97,11 @@ export class ByteBoundedCache {
   delete(url) {
     const slot = this.#map.get(url);
     if (!slot) return false;
+    // Same ordering as eviction inside set(): mutate first, callback last,
+    // so a throwing onEvict can't leave the cache half-consistent.
     this.#bytes -= slot.b;
-    if (this.#onEvict) this.#onEvict(slot.v);
     this.#map.delete(url);
+    if (this.#onEvict) this.#onEvict(slot.v);
     return true;
   }
 }

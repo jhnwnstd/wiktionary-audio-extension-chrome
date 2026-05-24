@@ -2,6 +2,7 @@
 
 import { PER_FILE_MAX_BYTES, OUTPUT_MAX_BYTES } from "./shared/limits.mjs";
 import { isAllowedAudioUrl } from "./shared/audio-allowlist.mjs";
+import { isAudioContentType } from "./shared/content-type.mjs";
 import { FFmpeg } from "./vendor/ffmpeg/ffmpeg.mjs";
 
 const DEBUG = false;
@@ -152,11 +153,10 @@ chrome.runtime.onConnect.addListener(port => {
           const response = await fetch(srcUrl, { credentials: 'omit' });
           if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
           if (!isAllowedAudioUrl(response.url)) throw new Error('redirect outside allowlist');
-          // Enforce "audio bytes only" before handing to FFmpeg. Same shape
-          // as the prefetch check in background.js: audio/* plus the legacy
-          // application/ogg that Wikimedia still uses for .ogg files.
-          const ct = (response.headers.get('Content-Type') || '').toLowerCase();
-          if (!ct.startsWith('audio/') && ct.split(';')[0].trim() !== 'application/ogg') {
+          // Enforce "audio bytes only" before handing to FFmpeg. Same
+          // predicate as the prefetch check; lives in shared/ so a future
+          // MIME addition is a one-file edit.
+          if (!isAudioContentType(response.headers.get('Content-Type'))) {
             throw new Error('non-audio Content-Type');
           }
           // Number.isFinite filters out NaN/Infinity from a malformed header
