@@ -4,9 +4,9 @@
   "description": "Chrome extension (Manifest V3) that finds pronunciation audio on any Wiktionary page and lets you download the original file or convert it to WAV locally via FFmpeg.wasm. No servers, no remote code.",
   "main": "background.js",
   "scripts": {
-    "lint": "eslint src/**/*.js tests/**/*.js scripts/**/*.js",
+    "lint": "eslint src/**/*.js src/**/*.mjs tests/**/*.js tests/**/*.mjs scripts/**/*.js",
     "typecheck": "tsc -p jsconfig.json",
-    "test": "node tests/unit/test.js",
+    "test": "node tests/unit/test.mjs",
     "test:e2e": "playwright test --config=tests/playwright.config.js --grep-invert \"@live|@profile\"",
     "test:live": "playwright test --config=tests/playwright.config.js --grep @live",
     "test:profile": "playwright test --config=tests/playwright.config.js --grep @profile",

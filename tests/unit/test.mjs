@@ -1,5 +1,28 @@
-// Test suite for Wiktionary Audio Extension
+// Unit tests for Wiktionary Audio Extension. ES module so we can import
+// production source directly instead of mirroring it.
+//
 // Run: npm test
+
+import { AUDIO_HOST_ALLOWLIST, isAllowedAudioUrl } from '../../src/shared/audio-allowlist.mjs';
+import {
+  AUDIO_MIMES, AUDIO_EXT_RE, isAudioInfo, validImageInfo, urlTail,
+} from '../../src/shared/audio-info.mjs';
+import {
+  PER_FILE_MAX_BYTES, OUTPUT_MAX_BYTES,
+} from '../../src/shared/limits.mjs';
+import {
+  sanitizeFilename, truncateToBytes, utf8ByteLength,
+} from '../../src/shared/sanitize-filename.mjs';
+import { pathWithFolder, batchFolderName } from '../../src/shared/paths.mjs';
+import { ByteBoundedCache } from '../../src/shared/byte-bounded-cache.mjs';
+import { i18n, pickLocale, translations } from '../../src/shared/i18n.mjs';
+import {
+  parseAudioFilename, friendlyAudioFilename, humanReadableName,
+} from '../../src/content/filename.mjs';
+import {
+  audioItemsFromPages, safeDecodeURIComponent,
+  isPlainContinue, applyContinuation, isEnglishLang,
+} from '../../src/content/discovery.mjs';
 
 let passed = 0, failed = 0;
 function assert(condition, msg) {
@@ -8,314 +31,34 @@ function assert(condition, msg) {
 }
 function section(name) { console.log(name); }
 
-// ============ Replicate extension logic for testing ============
-
-// Mirrored from src/content-script.js. Keep in sync.
-const AUDIO_MIMES = new Set([
-  'application/ogg',
-]);
-const AUDIO_EXT_RE = /\.(ogg|oga|opus|mp3|wav|flac|m4a|aac)$/i;
-
-function isAudioFile(filename, mimeType) {
-  if (mimeType) {
-    const m = mimeType.toLowerCase();
-    if (m.startsWith('audio/')) return true;
-    if (AUDIO_MIMES.has(m)) return true;
-  }
-  return typeof filename === 'string' && AUDIO_EXT_RE.test(filename);
-}
-
-// Mirrored from src/content-script.js. Keep in sync.
-function isAudioInfo(info) {
-  if (!info) return false;
-  if (typeof info.mediatype === 'string' && info.mediatype.length > 0) {
-    return info.mediatype.toUpperCase() === 'AUDIO';
-  }
-  if (typeof info.mime === 'string') {
-    const m = info.mime.toLowerCase();
-    if (m.startsWith('audio/')) return true;
-    if (AUDIO_MIMES.has(m)) return true;
-  }
-  if (typeof info.url === 'string' && AUDIO_EXT_RE.test(info.url)) return true;
-  return false;
-}
-
-function validImageInfo(info) {
-  if (!info || typeof info !== 'object') return false;
-  if (typeof info.url !== 'string' || info.url.length === 0) return false;
-  if (info.mime !== undefined && info.mime !== null && typeof info.mime !== 'string') return false;
-  if (info.mediatype !== undefined && info.mediatype !== null && typeof info.mediatype !== 'string') return false;
-  if (info.size !== undefined && info.size !== null) {
-    if (typeof info.size !== 'number' || !Number.isFinite(info.size) || info.size < 0) return false;
-  }
-  return true;
-}
-
-function urlTail(url) {
-  try {
-    const p = new URL(url).pathname;
-    const i = p.lastIndexOf('/');
-    const tail = i >= 0 ? p.slice(i + 1) : p;
-    return tail || 'audio';
-  } catch { return 'audio'; }
-}
-
-function audioItemsFromPages(pages) {
-  if (!Array.isArray(pages)) return [];
-  const results = [];
-  for (const page of pages) {
-    const info = page?.imageinfo?.[0];
-    if (!validImageInfo(info)) continue;
-    if (!isAudioInfo(info)) continue;
-    results.push({
-      title: page.title,
-      url: info.url,
-      filename: decodeURIComponent(urlTail(info.url)),
-    });
-  }
-  return results;
-}
-
-// Mirrored continuation handling from src/content-script.js. Keep in sync.
-const CONTINUE_KEYS = new Set(['continue', 'gimcontinue']);
-function isPlainContinue(c) {
-  if (c === null || typeof c !== 'object') return false;
-  if (Array.isArray(c)) return false;
-  const proto = Object.getPrototypeOf(c);
-  return proto === Object.prototype || proto === null;
-}
-function applyContinuation(params, cont) {
-  for (const k of CONTINUE_KEYS) {
-    const v = cont[k];
-    if (typeof v === 'string') params.set(k, v);
-  }
-}
-
-// Mirrored from src/background.js sanitizeFilename. Keep in sync.
-const WINDOWS_RESERVED_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
-const FORBIDDEN_CHARS_RE = /[<>:"/\\|?*\x00-\x1f]/g;
-const UTF8_ENCODER = new TextEncoder();
-const UTF8_DECODER = new TextDecoder();
-const utf8ByteLength = (s) => UTF8_ENCODER.encode(s).length;
-function truncateToBytes(s, maxBytes) {
-  const bytes = UTF8_ENCODER.encode(s);
-  if (bytes.length <= maxBytes) return s;
-  let cut = maxBytes;
-  while (cut > 0 && (bytes[cut] & 0xc0) === 0x80) cut--;
-  return UTF8_DECODER.decode(bytes.subarray(0, cut));
-}
-function sanitizeFilename(filename) {
-  if (typeof filename !== 'string' || !filename) return 'audio';
-  let s = filename
-    .split('?')[0].split('#')[0]
-    .replace(FORBIDDEN_CHARS_RE, '_')
-    .replace(/\s+/g, ' ')
-    .replace(/^\.+/, '')
-    .replace(/[. ]+$/, '')
-    .trim();
-  if (WINDOWS_RESERVED_RE.test(s)) s = '_' + s;
-  if (utf8ByteLength(s) > 255) {
-    const extIdx = s.lastIndexOf('.');
-    if (extIdx > 0 && s.length - extIdx <= 16) {
-      const ext = s.slice(extIdx);
-      s = truncateToBytes(s.slice(0, extIdx), 255 - utf8ByteLength(ext)) + ext;
-    } else {
-      s = truncateToBytes(s, 255);
-    }
-  }
-  return s || 'audio';
-}
-
-// Mirrored from src/content-script.js. Keep in sync.
-const ISO_639_3_TO_1 = {
-  eng: 'en', deu: 'de', fra: 'fr', spa: 'es', ita: 'it',
-  jpn: 'ja', zho: 'zh', cmn: 'zh', yue: 'zh', por: 'pt',
-  nld: 'nl', swe: 'sv', nor: 'no', dan: 'da', fin: 'fi',
-  pol: 'pl', rus: 'ru', ara: 'ar', hin: 'hi', kor: 'ko',
-  tur: 'tr', ukr: 'uk', ces: 'cs', ell: 'el', heb: 'he',
-  tha: 'th', vie: 'vi', ron: 'ro', hun: 'hu', ind: 'id',
-};
-const DIALECT_ADJECTIVES = {
-  us: 'american', uk: 'british', gb: 'british',
-  au: 'australian', ca: 'canadian', ie: 'irish',
-  nz: 'new-zealand', za: 'south-african', in: 'indian',
-  mx: 'mexican', ar: 'argentinian', br: 'brazilian',
-  at: 'austrian', ch: 'swiss', be: 'belgian',
-  'am-lat': 'latin-american', 'am_lat': 'latin-american',
-  inlandnorth: 'inland-north', gen: 'general', gam: 'general-american',
-  cmn: 'mandarin', yue: 'cantonese', wuu: 'shanghainese',
-  nan: 'min-nan', hak: 'hakka',
-  qc: 'quebec',
-};
-const LANG_OVERRIDES = {
-  qc: 'quebec-french',
-  jer: 'jèrriais',
-};
-const LANG_DISPLAY = (() => {
-  try { return new Intl.DisplayNames(['en'], { type: 'language', fallback: 'code' }); }
-  catch { return null; }
-})();
-const REGION_DISPLAY = (() => {
-  try { return new Intl.DisplayNames(['en'], { type: 'region', fallback: 'code' }); }
-  catch { return null; }
-})();
-function slugifyName(s) {
-  return String(s).toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
-}
-function normalizeFieldValue(v) {
-  if (v === null || v === undefined) return v;
-  return String(v).replace(/[_\s]+/g, '-');
-}
-function describeLanguage(code) {
-  if (!code) return null;
-  let key = code.toLowerCase();
-  if (Object.prototype.hasOwnProperty.call(LANG_OVERRIDES, key)) return LANG_OVERRIDES[key];
-  if (Object.prototype.hasOwnProperty.call(ISO_639_3_TO_1, key)) key = ISO_639_3_TO_1[key];
-  if (LANG_DISPLAY) {
-    try {
-      const d = LANG_DISPLAY.of(key);
-      if (d && d.toLowerCase() !== key) return slugifyName(d);
-    } catch { /* fall through */ }
-  }
-  return normalizeFieldValue(key);
-}
-function describeDialect(code) {
-  if (!code) return null;
-  const key = code.toLowerCase();
-  if (Object.prototype.hasOwnProperty.call(DIALECT_ADJECTIVES, key)) return DIALECT_ADJECTIVES[key];
-  if (key.includes('-') || key.includes('_')) {
-    const parts = key.split(/[-_]/);
-    const mapped = parts.map((p) => {
-      if (Object.prototype.hasOwnProperty.call(DIALECT_ADJECTIVES, p)) return DIALECT_ADJECTIVES[p];
-      if (REGION_DISPLAY && p.length === 2) {
-        try {
-          const d = REGION_DISPLAY.of(p.toUpperCase());
-          if (d && d.toLowerCase() !== p) return slugifyName(d);
-        } catch { /* fall through */ }
-      }
-      return p;
-    });
-    return mapped.join('-');
-  }
-  if (REGION_DISPLAY && key.length === 2) {
-    try {
-      const d = REGION_DISPLAY.of(key.toUpperCase());
-      if (d && d.toLowerCase() !== key) return slugifyName(d);
-    } catch { /* fall through */ }
-  }
-  return normalizeFieldValue(key);
-}
-function escapeRegex(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
-function parseAudioFilename(raw, knownWord = null) {
-  if (!raw) return { lang: null, dialect: null, speaker: null, word: 'audio', extra: null, ext: '' };
-  const decoded = decodeURIComponent(String(raw).split('?')[0].split('#')[0]);
-  const base = decoded.split('/').pop() || decoded;
-  const extMatch = base.match(/\.([a-z0-9]+)$/i);
-  const ext = extMatch ? extMatch[1].toLowerCase() : '';
-  const stem = ext ? base.slice(0, base.length - ext.length - 1) : base;
-  const wordAnchor = knownWord ? escapeRegex(knownWord) : null;
-  if (wordAnchor) {
-    const m = stem.match(new RegExp(`^LL-Q\\d+_\\(([a-z]{2,3})\\)-(.+)-(${wordAnchor})$`, 'i'));
-    if (m) return { lang: m[1].toLowerCase(), dialect: null, speaker: m[2], word: m[3], extra: null, ext };
-  }
-  const ll1 = stem.match(/^LL-Q\d+_\(([a-z]{2,3})\)-(.+)-([^-]+)$/i);
-  if (ll1) return { lang: ll1[1].toLowerCase(), dialect: null, speaker: ll1[2], word: ll1[3], extra: null, ext };
-  if (wordAnchor) {
-    const m = stem.match(new RegExp(`^LL-Q\\d+-(.+)-(${wordAnchor})$`));
-    if (m) return { lang: null, dialect: null, speaker: m[1], word: m[2], extra: null, ext };
-  }
-  const ll2 = stem.match(/^LL-Q\d+-(.+)-([^-]+)$/);
-  if (ll2) return { lang: null, dialect: null, speaker: ll2[1], word: ll2[2], extra: null, ext };
-  if (wordAnchor) {
-    const m = stem.match(new RegExp(`^LL-(.+)-([a-z]{2,3})-(${wordAnchor})$`));
-    if (m) return { lang: m[2].toLowerCase(), dialect: null, speaker: m[1], word: m[3], extra: null, ext };
-  }
-  const ll3 = stem.match(/^LL-(.+)-([a-z]{2,3})-([^-]+)$/);
-  if (ll3) return { lang: ll3[2].toLowerCase(), dialect: null, speaker: ll3[1], word: ll3[3], extra: null, ext };
-  if (wordAnchor) {
-    const shortTail = `(?:${wordAnchor}|${wordAnchor}-[a-z0-9]{1,12})`;
-    const m1 = stem.match(new RegExp(`^([A-Z][a-z]{0,2})-([a-z][a-z_-]{0,28}[a-z])-(${shortTail})$`));
-    if (m1) return { lang: m1[1].toLowerCase(), dialect: m1[2], speaker: null, word: m1[3], extra: null, ext };
-    const m2 = stem.match(new RegExp(`^([A-Z][a-z]{0,2})-([a-z][a-z_-]{0,28}[a-z])-(${wordAnchor})-(.+)$`));
-    if (m2) return { lang: m2[1].toLowerCase(), dialect: m2[2], speaker: null, word: m2[3], extra: m2[4], ext };
-  }
-  const ld = stem.match(/^([A-Z][a-z]{0,2})-([a-z][a-z_-]{0,5}[a-z])-(.+)$/);
-  if (ld) return { lang: ld[1].toLowerCase(), dialect: ld[2], speaker: null, word: ld[3], extra: null, ext };
-  const lw = stem.match(/^([A-Z][a-z]{0,2})-(.+)$/);
-  if (lw) return { lang: lw[1].toLowerCase(), dialect: null, speaker: null, word: lw[2], extra: null, ext };
-  return { lang: null, dialect: null, speaker: null, word: stem, extra: null, ext };
-}
-function friendlyAudioFilename(parsed) {
-  const parts = [];
-  const lang = describeLanguage(parsed.lang);
-  if (lang) parts.push(lang);
-  const dialect = describeDialect(parsed.dialect);
-  if (dialect) parts.push(dialect);
-  parts.push(normalizeFieldValue(parsed.word));
-  if (parsed.extra) parts.push(normalizeFieldValue(parsed.extra));
-  if (parsed.speaker) parts.push(normalizeFieldValue(parsed.speaker));
-  const stem = parts.join('_');
-  return parsed.ext ? `${stem}.${parsed.ext}` : stem;
+// Test convenience shims. `isAudioFile` is the legacy filename+mime path,
+// derived from the shared isAudioInfo by constructing the right shape.
+// `formatAudio` and `humanReadable` chain parseAudioFilename with the
+// downstream formatters since most tests are end-to-end on a raw name.
+function isAudioFile(filename, mime) {
+  return isAudioInfo({ url: filename || '', mime: mime || undefined });
 }
 function formatAudio(raw) { return friendlyAudioFilename(parseAudioFilename(raw)); }
-
-function titleCasePart(s) {
-  if (!s) return s;
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-function humanReadableName(parsed, originalFilename) {
-  if (!parsed.lang && !parsed.dialect && !parsed.speaker) return originalFilename;
-  const parts = [];
-  if (parsed.lang) {
-    const lang = describeLanguage(parsed.lang);
-    if (lang) parts.push(lang.split('-').map(titleCasePart).join(' '));
-  }
-  if (parsed.dialect) {
-    const dialect = describeDialect(parsed.dialect);
-    if (dialect) parts.push(dialect.split('-').map(titleCasePart).join(' '));
-  }
-  parts.push(`'${String(parsed.word).replace(/_/g, ' ')}'`);
-  if (parsed.extra) parts.push(`(${String(parsed.extra).replace(/[-_]/g, ' ')})`);
-  if (parsed.speaker) parts.push(`by ${String(parsed.speaker).replace(/_/g, ' ')}`);
-  return parts.join(' ') + (parsed.ext ? ` .${parsed.ext}` : '');
-}
 function humanReadable(raw) { return humanReadableName(parseAudioFilename(raw), raw); }
 
-// Mirrored from src/content-script.js batchFolderName. Keep in sync.
-function batchFolderName(hostname, title) {
-  const m = hostname.match(/^([a-z]{2,3})\.wiktionary\.org$/);
-  const edition = m?.[1] || 'wiktionary';
-  return `Wiktionary-${edition}-${title || 'audio'}`;
+// extractTitle is a one-liner mirroring the entry's URL parse. detectLang
+// mirrors pickLocale's behavior with the local i18n shipped here.
+function extractTitle(pathname) {
+  try { return decodeURIComponent(pathname.split('/wiki/')[1] ?? ''); }
+  catch { return ''; }
 }
+function detectLang(hostname) { return pickLocale(hostname); }
 
-// Mirrored from src/background.js pathWithFolder. Keep in sync.
-function pathWithFolder(folder, filename) {
-  const file = sanitizeFilename(filename);
-  if (!folder) return file;
-  return sanitizeFilename(folder) + '/' + file;
-}
-
+// arrayBufferToBase64 is private to background.js (chunked btoa, used only
+// for sub-DATA_URL_THRESHOLD_BYTES bytes). Mirrored here as a test helper
+// because it's tiny and isn't worth exposing as a module export.
 function arrayBufferToBase64(arrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
-  try {
-    if (bytes.length < 65536) return btoa(String.fromCharCode(...bytes));
-  } catch {}
   let bin = '';
   for (let i = 0; i < bytes.length; i += 8192) {
     bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
   }
   return btoa(bin);
-}
-
-function extractTitle(pathname) {
-  return decodeURIComponent(pathname.split('/wiki/')[1] ?? '');
-}
-
-function detectLang(hostname) {
-  const i18n = { en: 1, de: 1, fr: 1, es: 1, it: 1, ja: 1, zh: 1 };
-  const match = hostname.match(/^([a-z]{2,3})\.wiktionary\.org$/);
-  const lang = match?.[1] || 'en';
-  return i18n[lang] ? lang : 'en';
 }
 
 // ============ TESTS ============
@@ -326,26 +69,18 @@ assert(isAudioFile('t.ogg', 'application/ogg'), 'application/ogg (Wiktionary act
 assert(isAudioFile('t.mp3', 'audio/mpeg'), 'audio/mpeg');
 assert(isAudioFile('t.wav', 'audio/wav'), 'audio/wav');
 assert(isAudioFile('t.opus', 'audio/opus'), 'audio/opus');
-assert(isAudioFile('t.ogg', 'video/ogg'), '.ogg extension wins even if MIME claims video/ogg');
+assert(isAudioFile('t.ogg', 'video/ogg'), '.ogg extension wins even when MIME claims video/ogg (no authoritative mediatype)');
 assert(isAudioFile('t.ogg', null), '.ogg fallback');
 assert(isAudioFile('t.opus', undefined), '.opus fallback');
 assert(isAudioFile('t.mp3'), '.mp3 no mime arg');
 assert(isAudioFile('t.flac'), '.flac');
 assert(isAudioFile('t.oga'), '.oga');
-// Whitelist tightened to extensions that are unambiguously audio by format
-// or convention. .m4a and .aac are audio-only by definition; .webm stays
-// out because the WebM container can carry video.
 assert(isAudioFile('t.m4a'), '.m4a (audio-only MP4 variant)');
 assert(isAudioFile('t.aac'), '.aac (raw AAC stream)');
 assert(!isAudioFile('t.webm'), 'reject .webm (could be video container)');
 assert(!isAudioFile('t.jpg', 'image/jpeg'), 'reject jpg');
-assert(!isAudioFile(null, null), 'reject null');
-assert(!isAudioFile(undefined), 'reject undefined');
 assert(!isAudioFile('', ''), 'reject empty');
-assert(!isAudioFile(123), 'reject non-string');
-// Authoritative mediatype: VIDEO is a hard reject regardless of MIME or
-// extension. This is the new behavior that catches video files which
-// happen to land on an audio-looking extension.
+// isAudioInfo: mediatype authority overrides extension/MIME
 assert(!isAudioInfo({ mediatype: 'VIDEO', url: 'x.ogg' }), 'mediatype=VIDEO overrides .ogg extension');
 assert(!isAudioInfo({ mediatype: 'VIDEO', mime: 'audio/ogg', url: 'x.ogg' }), 'mediatype=VIDEO overrides audio MIME');
 assert(!isAudioInfo({ mediatype: 'BITMAP', url: 'x.jpg' }), 'mediatype=BITMAP is rejected');
@@ -363,17 +98,17 @@ assert(audioItemsFromPages([]).length === 0, 'empty pages array');
 assert(audioItemsFromPages({ '-1': { title: 'File:t.ogg' } }).length === 0, 'rejects v1 object form');
 assert(audioItemsFromPages([{ title: 'File:t.ogg' }]).length === 0, 'no imageinfo');
 assert(
-  audioItemsFromPages([{ title: 'File:t.jpg', imageinfo: [{ url: 'https://x/t.jpg', mime: 'image/jpeg', mediatype: 'BITMAP' }] }]).length === 0,
+  audioItemsFromPages([{ title: 'File:t.jpg', imageinfo: [{ url: 'https://upload.wikimedia.org/x/t.jpg', mime: 'image/jpeg', mediatype: 'BITMAP' }] }]).length === 0,
   'image page filtered by mediatype'
 );
 
 // mediatype is the primary filter; fall back to mime and then extension.
 assert(
-  audioItemsFromPages([{ title: 'File:x.opus', imageinfo: [{ url: 'https://x/y.opus', mediatype: 'AUDIO' }] }]).length === 1,
+  audioItemsFromPages([{ title: 'File:x.opus', imageinfo: [{ url: 'https://upload.wikimedia.org/x/y.opus', mediatype: 'AUDIO' }] }]).length === 1,
   'mediatype-only (no mime) still passes'
 );
 assert(
-  audioItemsFromPages([{ title: 'File:x.mp3', imageinfo: [{ url: 'https://x/y.mp3', mime: 'audio/mpeg' }] }]).length === 1,
+  audioItemsFromPages([{ title: 'File:x.mp3', imageinfo: [{ url: 'https://upload.wikimedia.org/x/y.mp3', mime: 'audio/mpeg' }] }]).length === 1,
   'mime-only audio/* passes when mediatype absent'
 );
 
@@ -385,16 +120,17 @@ const wr = audioItemsFromPages(waterPages);
 assert(wr.length === 2, 'mixed formats');
 assert(wr[1].filename === 'LL-Q1860_(eng)-water.wav', 'URL decoded filename');
 
+// audioItemsFromPages also enforces the Wikimedia host allowlist.
+const offHost = [{ title: 'File:x.ogg', imageinfo: [{ url: 'https://attacker.example/x.ogg', mime: 'audio/ogg', mediatype: 'AUDIO' }] }];
+assert(audioItemsFromPages(offHost).length === 0, 'non-Wikimedia URL dropped at discovery boundary');
+
 section('Filename sanitization (cross-platform: Win/Mac/Linux)');
-// Existing behavior preserved
 assert(sanitizeFilename('En-au-topper.ogg') === 'En-au-topper.ogg', 'clean unchanged');
 assert(sanitizeFilename('a<b>c:d"e') === 'a_b_c_d_e', 'special chars');
 assert(sanitizeFilename('...hidden') === 'hidden', 'leading dots');
 assert(sanitizeFilename('  spaced  ') === 'spaced', 'whitespace');
 assert(sanitizeFilename('LL-Q150_(fra)-Jérémy.wav') === 'LL-Q150_(fra)-Jérémy.wav', 'unicode');
 assert(sanitizeFilename('En-au-topper.ogg'.replace(/\.[^.]+$/, '')) === 'En-au-topper', 'base name');
-
-// New cross-platform behavior
 assert(sanitizeFilename('') === 'audio', 'empty -> audio fallback');
 assert(sanitizeFilename(null) === 'audio', 'null -> audio fallback');
 assert(sanitizeFilename(undefined) === 'audio', 'undefined -> audio fallback');
@@ -443,7 +179,6 @@ assert(formatAudio('Fr-eau.ogg') === 'french_eau.ogg', 'Fr-eau -> french_eau');
 assert(formatAudio('LL-Q1860_(eng)-Stebbington-water.wav') === 'english_water_Stebbington.wav', 'LL -> english_word_speaker');
 assert(formatAudio('En-au-Georgian.ogg?utm_source=foo') === 'english_australian_Georgian.ogg', 'friendly strips utm');
 assert(formatAudio('weird_name.mp3') === 'weird-name.mp3', 'unparseable: underscore in word -> hyphen (within-field)');
-// Unknown dialect code passes through verbatim (lowercased)
 assert(formatAudio('En-xx-thing.ogg') === 'english_xx_thing.ogg', 'unknown dialect -> code');
 
 // Real-world variants observed in live sweep
@@ -462,15 +197,12 @@ assert(formatAudio('Es-am-lat-agua.ogg') === 'spanish_latin-american_agua.ogg', 
 assert(formatAudio('Zh-cmn-shuǐ.ogg') === 'chinese_mandarin_shuǐ.ogg', 'Chinese topolect as dialect');
 
 section('Separator convention: _ between fields, - within a field');
-// LinguaLibre speakers often have underscores in source (Naomi_Persephone_Amethyst);
-// those are inside one field (speaker) so they normalize to hyphens.
 const llNaomi = parseAudioFilename('LL-Q1860_(eng)-Naomi_Persephone_Amethyst-cat.wav');
 assert(llNaomi.speaker === 'Naomi_Persephone_Amethyst', 'parser keeps source speaker verbatim');
 assert(
   formatAudio('LL-Q1860_(eng)-Naomi_Persephone_Amethyst-cat.wav') === 'english_cat_Naomi-Persephone-Amethyst.wav',
   'speaker underscores normalize to hyphens (within speaker field)'
 );
-// Multi-word region from Intl (e.g., New Zealand) stays as a single field with `-`.
 assert(formatAudio('En-nz-kia_ora.ogg') === 'english_new-zealand_kia-ora.ogg', 'nz -> new-zealand; word underscore -> hyphen');
 
 section('Human-readable panel display');
@@ -489,82 +221,66 @@ assert(
 assert(humanReadable('Zh-cmn-shuǐ.ogg') === "Chinese Mandarin 'shuǐ' .ogg", 'Chinese topolect dialect -> display');
 
 section('Hyphenated speakers and compound words (parser ambiguity)');
-// Hyphenated speaker, simple word: greedy speaker handles this without context.
 const hs1 = parseAudioFilename('LL-Q150_(fra)-Jérémy-Günther-water.wav');
 assert(
   hs1.lang === 'fra' && hs1.speaker === 'Jérémy-Günther' && hs1.word === 'water',
   'hyphenated speaker, simple word: speaker=Jérémy-Günther, word=water'
 );
-// Same file with explicit knownWord still parses correctly.
 const hs2 = parseAudioFilename('LL-Q150_(fra)-Jérémy-Günther-water.wav', 'water');
 assert(
   hs2.speaker === 'Jérémy-Günther' && hs2.word === 'water',
   'hyphenated speaker with anchor: same result'
 );
-// Real-world case from the live sweep: long compound name with space.
 const hs3 = parseAudioFilename('LL-Q150_(fra)-Jérémy-Günther-Heinz Jähnick-water.wav');
 assert(
   hs3.speaker === 'Jérémy-Günther-Heinz Jähnick' && hs3.word === 'water',
   'multi-hyphen compound name resolves to single speaker'
 );
 
-// Compound WORD without anchor: degrades to the last token as the word.
 const cw1 = parseAudioFilename('LL-Q1860_(eng)-Stebbington-well-known.wav');
 assert(
   cw1.speaker === 'Stebbington-well' && cw1.word === 'known',
   'no anchor: compound word degrades (acceptable fallback)'
 );
-// With knownWord='well-known', anchor recovers the right split.
 const cw2 = parseAudioFilename('LL-Q1860_(eng)-Stebbington-well-known.wav', 'well-known');
 assert(
   cw2.speaker === 'Stebbington' && cw2.word === 'well-known',
   'knownWord anchor recovers compound word'
 );
-// Ambiguous case: both speaker AND word have hyphens. Anchor disambiguates.
 const cw3 = parseAudioFilename('LL-Q150_(fra)-Jérémy-Günther-well-known.wav', 'well-known');
 assert(
   cw3.speaker === 'Jérémy-Günther' && cw3.word === 'well-known',
   'both-have-hyphens disambiguated by knownWord'
 );
 
-// LL hyphenated Q-form still works with hyphenated speakers + anchor.
 const llQH1 = parseAudioFilename('LL-Q9186-Justinrleung-Wang-水.wav', '水');
 assert(
   llQH1.speaker === 'Justinrleung-Wang' && llQH1.word === '水',
   'LL2 hyphenated speaker with CJK anchor'
 );
 
-// LL speaker-first form: speaker can also have hyphens here.
 const llSH1 = parseAudioFilename('LL-Foo-Bar-fr-eau.wav', 'eau');
 assert(
   llSH1.lang === 'fr' && llSH1.speaker === 'Foo-Bar' && llSH1.word === 'eau',
   'LL3 hyphenated speaker with anchor'
 );
 
-// Compound word with greedy default (no anchor): speaker absorbs hyphen
-// regions but the lang code anchor still works because lang must be 2-3 chars.
 const llSH2 = parseAudioFilename('LL-Speaker-fr-eau.wav');
 assert(
   llSH2.lang === 'fr' && llSH2.speaker === 'Speaker' && llSH2.word === 'eau',
   'LL3 simple case unchanged'
 );
 
-// Non-LL cases unaffected by the new regex.
 assert(parseAudioFilename('En-au-Georgian.ogg', 'Georgian').dialect === 'au', 'non-LL parser still works with anchor arg');
 assert(parseAudioFilename('De-Wasser.ogg').lang === 'de', 'non-LL parser still works without anchor arg');
 
 section('Findings from real Wiktionary data');
-// Quebec French: region used as language prefix, no separate lang code.
 assert(formatAudio('Qc-café.ogg') === 'quebec-french_café.ogg', 'Qc -> quebec-french in filename');
 assert(humanReadable('Qc-café.ogg') === "Quebec French 'café' .ogg", 'Qc -> Quebec French in display');
 
-// Jèrriais: variety with its own Wiktionary entry but no ISO 639-1 code.
 assert(formatAudio('Jer-cat.ogg') === 'jèrriais_cat.ogg', 'Jer -> jèrriais in filename');
 assert(humanReadable('Jer-cat.ogg') === "Jèrriais 'cat' .ogg", 'Jer -> Jèrriais in display');
 
-// Long regional dialect tag only resolves cleanly with knownWord anchor.
-// Without context, the dialect is capped at 7 chars to avoid greedy over-match
-// in the common "En-us-hello-4" case (where us-hello would otherwise be eaten).
 const inlandRaw = parseAudioFilename('En-inlandnorth-cat.ogg');
 assert(
   inlandRaw.lang === 'en' && inlandRaw.word === 'inlandnorth-cat' && !inlandRaw.dialect,
@@ -584,7 +300,6 @@ assert(
   'anchored: inlandnorth -> Inland North in display'
 );
 
-// Compound dialect (us-inlandnorth) needs anchor + compound-split.
 const compoundDialect = parseAudioFilename('En-us-inlandnorth-cat.ogg', 'cat');
 assert(
   compoundDialect.dialect === 'us-inlandnorth' && compoundDialect.word === 'cat',
@@ -599,8 +314,6 @@ assert(
   'compound dialect -> multi-word display'
 );
 
-// Variant-indexed file (En-us-hello-4): anchor accepts pageTitle-<suffix>
-// so dialect stays at `us` and the suffix rides on the word.
 const variantAnchored = parseAudioFilename('En-us-hello-4.ogg', 'hello');
 assert(
   variantAnchored.dialect === 'us' && variantAnchored.word === 'hello-4',
@@ -612,7 +325,6 @@ assert(
 );
 
 section('Phonetic extra (e.g. cot-caught merger)');
-// Real example from en/water page: file has phonetic feature in name.
 const merger = parseAudioFilename('En-us-water-cot-caught-merger.ogg', 'water');
 assert(
   merger.dialect === 'us' && merger.word === 'water' && merger.extra === 'cot-caught-merger',
@@ -627,7 +339,6 @@ assert(
   'extra rendered in parens with spaces in display'
 );
 
-// Long-form: "without the cot-caught merger" (a different recording variant).
 const without = parseAudioFilename('En-us-water-without-the-cot-caught-merger.ogg', 'water');
 assert(
   without.word === 'water' && without.extra === 'without-the-cot-caught-merger',
@@ -639,19 +350,12 @@ assert(
   'long phonetic phrase rendered with spaces'
 );
 
-// Anchor failure case: without knownWord, the extra-capture pattern doesn't
-// run, so the parser falls back to the older greedy regex (word absorbs the
-// whole tail). This is the documented degraded behavior when context is
-// unavailable.
 const mergerNoAnchor = parseAudioFilename('En-us-water-cot-caught-merger.ogg');
 assert(
   mergerNoAnchor.extra === null,
   'no anchor: extra stays null (degrades gracefully)'
 );
 
-// URL query string from Wikimedia API leaks should be stripped at the
-// discovery layer, not just at parser layer. Verify audioItemsFromPages
-// cleans the filename pulled from info.url.
 const trackedPages = [{
   title: 'File:BY-Wasser.ogg',
   imageinfo: [{
@@ -671,7 +375,6 @@ assert(batchFolderName('fr.wiktionary.org', 'eau') === 'Wiktionary-fr-eau', 'fr/
 assert(batchFolderName('example.com', 'foo') === 'Wiktionary-wiktionary-foo', 'non-wiktionary fallback edition');
 assert(batchFolderName('en.wiktionary.org', '') === 'Wiktionary-en-audio', 'empty title falls back to "audio"');
 
-// pathWithFolder composes the final chrome.downloads filename.
 assert(pathWithFolder(null, 'foo.ogg') === 'foo.ogg', 'no folder -> just filename');
 assert(pathWithFolder('', 'foo.ogg') === 'foo.ogg', 'empty folder -> just filename');
 assert(
@@ -682,9 +385,6 @@ assert(
   pathWithFolder('Wiktionary-ja-水', 'chinese_shuǐ.ogg') === 'Wiktionary-ja-水/chinese_shuǐ.ogg',
   'unicode preserved in both folder and filename'
 );
-// Defense in depth: a `/` in the folder or file gets sanitized away before
-// the separator is added, so the user can't accidentally escape into a deeper
-// directory tree.
 assert(
   pathWithFolder('bad/folder', 'foo.ogg') === 'bad_folder/foo.ogg',
   'slash in folder sanitized to underscore'
@@ -695,16 +395,11 @@ assert(
 );
 
 section('Dynamic language coverage via Intl.DisplayNames');
-// These languages are NOT in any hardcoded table. They flow through
-// Intl.DisplayNames which the browser/Node ships with by default. If these
-// fail, the runtime lacks full-icu data; treat as environment problem, not
-// regression. Coverage proves the dynamic generalization the user asked for.
 assert(formatAudio('Sw-X.ogg') === 'swahili_X.ogg', 'sw (Swahili) via Intl');
 assert(formatAudio('Th-X.ogg') === 'thai_X.ogg', 'th (Thai) via Intl');
 assert(formatAudio('Hu-X.ogg') === 'hungarian_X.ogg', 'hu (Hungarian) via Intl');
 assert(formatAudio('Vi-X.ogg') === 'vietnamese_X.ogg', 'vi (Vietnamese) via Intl');
 assert(formatAudio('Eo-X.ogg') === 'esperanto_X.ogg', 'eo (Esperanto) via Intl');
-// Region/dialect that isn't in DIALECT_ADJECTIVES falls back to Intl region.
 const intlRegion = formatAudio('Es-cl-agua.ogg');
 assert(intlRegion === 'spanish_chile_agua.ogg' || intlRegion === 'spanish_cl_agua.ogg', 'cl (Chile) via Intl region: noun form acceptable');
 
@@ -728,50 +423,29 @@ assert(arrayBufferToBase64(new Uint8Array([]).buffer) === '', 'empty');
 const large = new Uint8Array(100000).fill(66).buffer;
 assert(atob(arrayBufferToBase64(large)).length === 100000, 'large roundtrip');
 
-// Reads src/content-script.js as text and pulls keys out of each locale block
-// in `const i18n = { ... }`. Catches drift where a new key is added to `en`
-// but missed in fr/de/etc., which would silently fall back to undefined in
-// the UI. No eval; pure regex extraction so the test stays safe even if
-// the source ever picked up a hostile string.
 section('i18n locale key parity');
-const fs = require('node:fs');
-const path = require('node:path');
-const contentSrc = fs.readFileSync(
-  path.join(__dirname, '../../src/content-script.js'), 'utf8');
-const i18nStart = contentSrc.indexOf('const i18n = {');
-const i18nEnd = contentSrc.indexOf('\n};', i18nStart);
-assert(i18nStart !== -1 && i18nEnd !== -1, 'i18n block located');
-const i18nBlock = contentSrc.slice(i18nStart, i18nEnd);
-
-const localeRe = /^ {2}([a-z]{2,3}):\s*\{$([\s\S]*?)^ {2}\}/gm;
-const locales = {};
-let lm;
-while ((lm = localeRe.exec(i18nBlock)) !== null) {
-  const [, code, body] = lm;
-  const keyRe = /^ {4}([A-Za-z_$][A-Za-z0-9_$]*):/gm;
-  const keys = [];
-  let km;
-  while ((km = keyRe.exec(body)) !== null) keys.push(km[1]);
-  locales[code] = keys.sort();
-}
-assert(Object.keys(locales).length >= 2, `extracted multiple locales (got ${Object.keys(locales).length})`);
-assert(locales.en && locales.en.length > 0, 'en locale extracted with keys');
-const enKeys = locales.en.join(',');
-for (const [code, keys] of Object.entries(locales)) {
+// Previously read content-script.js text to find drift across mirrored
+// locale blocks. With a single source of truth in shared/i18n.mjs the
+// check becomes a direct object compare.
+const enKeys = Object.keys(i18n.en).sort().join(',');
+assert(Object.keys(i18n).length >= 2, `multiple locales present (got ${Object.keys(i18n).length})`);
+for (const [code, table] of Object.entries(i18n)) {
   if (code === 'en') continue;
-  assert(
-    keys.join(',') === enKeys,
-    `i18n.${code} has same keys as en (got ${keys.length}, expected ${locales.en.length})`
-  );
+  const keys = Object.keys(table).sort().join(',');
+  assert(keys === enKeys, `i18n.${code} has same keys as en (got ${Object.keys(table).length}, expected ${Object.keys(i18n.en).length})`);
 }
+// translations(hostname) routes through pickLocale.
+assert(translations('en.wiktionary.org') === i18n.en, 'translations(en) -> en table');
+assert(translations('de.wiktionary.org') === i18n.de, 'translations(de) -> de table');
+assert(translations('zz.wiktionary.org') === i18n.en, 'unknown lang falls back to en');
+assert(translations('example.com') === i18n.en, 'non-wiktionary host -> en');
+assert(translations(undefined) === i18n.en, 'undefined hostname -> en');
 
 section('MediaWiki imageinfo schema validator');
-// Positive: realistic shapes accepted.
 assert(validImageInfo({ url: 'https://upload.wikimedia.org/x.ogg' }), 'minimum: url only');
 assert(validImageInfo({ url: 'https://x/y.ogg', mime: 'audio/ogg', mediatype: 'AUDIO', size: 1234 }), 'full shape');
 assert(validImageInfo({ url: 'https://x/y.ogg', mime: null, mediatype: null, size: null }), 'nulls in optionals');
 assert(validImageInfo({ url: 'https://x/y.ogg', size: 0 }), 'zero size accepted');
-// Negative: anything that would let bad data through.
 assert(!validImageInfo(null), 'null rejected');
 assert(!validImageInfo(undefined), 'undefined rejected');
 assert(!validImageInfo('string'), 'string rejected');
@@ -784,13 +458,12 @@ assert(!validImageInfo({ url: 'https://x/y.ogg', size: 'big' }), 'string size re
 assert(!validImageInfo({ url: 'https://x/y.ogg', size: Infinity }), 'Infinity size rejected');
 assert(!validImageInfo({ url: 'https://x/y.ogg', size: NaN }), 'NaN size rejected');
 assert(!validImageInfo({ url: 'https://x/y.ogg', size: -1 }), 'negative size rejected');
-// audioItemsFromPages now refuses malformed entries instead of silently coercing.
 assert(
-  audioItemsFromPages([{ title: 'F:x.ogg', imageinfo: [{ url: 'https://x/y.ogg', mediatype: 'AUDIO', size: NaN }] }]).length === 0,
+  audioItemsFromPages([{ title: 'F:x.ogg', imageinfo: [{ url: 'https://upload.wikimedia.org/y.ogg', mediatype: 'AUDIO', size: NaN }] }]).length === 0,
   'item with NaN size dropped'
 );
 assert(
-  audioItemsFromPages([{ title: 'F:x.ogg', imageinfo: [{ url: 'https://x/y.ogg', mediatype: 'AUDIO', mime: 42 }] }]).length === 0,
+  audioItemsFromPages([{ title: 'F:x.ogg', imageinfo: [{ url: 'https://upload.wikimedia.org/y.ogg', mediatype: 'AUDIO', mime: 42 }] }]).length === 0,
   'item with non-string mime dropped'
 );
 
@@ -802,6 +475,11 @@ assert(urlTail('https://upload.wikimedia.org/a/b/file.ogg?u=1#f') === 'file.ogg'
 assert(urlTail('https://upload.wikimedia.org/') === 'audio', 'empty tail -> audio fallback');
 assert(urlTail('https://upload.wikimedia.org/LL-Q1860_%28eng%29-water.wav') === 'LL-Q1860_%28eng%29-water.wav', 'pathname stays percent-encoded');
 assert(urlTail('not a url') === 'audio', 'malformed -> audio fallback');
+
+section('safeDecodeURIComponent');
+assert(safeDecodeURIComponent('foo%20bar') === 'foo bar', 'normal decode');
+assert(safeDecodeURIComponent('%E6%B0%B4') === '水', 'CJK decode');
+assert(safeDecodeURIComponent('%E0%A4%A') === '%E0%A4%A', 'malformed sequence falls back to raw');
 
 section('Continuation handling');
 assert(isPlainContinue({}), 'empty object is plain');
@@ -825,27 +503,32 @@ applyContinuation(cp3, { gimcontinue: 42, continue: null });
 assert(cp3.get('gimcontinue') === null, 'non-string value dropped');
 assert(cp3.get('continue') === null, 'null value dropped');
 
+section('isEnglishLang');
+assert(isEnglishLang('en'), 'en');
+assert(isEnglishLang('eng'), 'eng');
+assert(isEnglishLang('EN'), 'EN case-insensitive');
+assert(!isEnglishLang('de'), 'de not english');
+assert(!isEnglishLang(null), 'null not english');
+assert(!isEnglishLang(undefined), 'undefined not english');
+
 section('truncateToBytes: UTF-8 boundary correctness');
-// Output must always decode to valid UTF-8 (no split multi-byte sequences).
 function isValidUtf8Bytes(s) {
-  const bytes = UTF8_ENCODER.encode(s);
-  try { UTF8_DECODER.decode(bytes); return true; } catch { return false; }
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const bytes = encoder.encode(s);
+  try { decoder.decode(bytes); return true; } catch { return false; }
 }
 assert(truncateToBytes('hello', 100) === 'hello', 'no-op when under cap');
 assert(truncateToBytes('hello', 5) === 'hello', 'exact fit');
 assert(truncateToBytes('hello', 3) === 'hel', 'ASCII truncation');
 assert(truncateToBytes('', 10) === '', 'empty input');
-// é is 2 bytes (C3 A9); cutting at 1 must round down to 0.
 assert(truncateToBytes('é', 1) === '', 'partial 2-byte sequence rounded down');
 assert(truncateToBytes('é', 2) === 'é', 'full 2-byte sequence kept');
-// 水 is 3 bytes (E6 B0 B4); cutting at 1 or 2 must round down.
 assert(truncateToBytes('水', 1) === '', 'partial 3-byte at 1 rounded down');
 assert(truncateToBytes('水', 2) === '', 'partial 3-byte at 2 rounded down');
 assert(truncateToBytes('水', 3) === '水', 'full 3-byte sequence kept');
-// Emoji 🎵 is 4 bytes (F0 9F 8E B5).
 assert(truncateToBytes('🎵', 3) === '', 'partial 4-byte rounded down');
 assert(truncateToBytes('🎵', 4) === '🎵', 'full 4-byte sequence kept');
-// Mixed string: must always produce valid UTF-8.
 const mixed = 'abc水def🎵ghi';
 for (let maxBytes = 0; maxBytes <= utf8ByteLength(mixed) + 5; maxBytes++) {
   const out = truncateToBytes(mixed, maxBytes);
@@ -853,150 +536,30 @@ for (let maxBytes = 0; maxBytes <= utf8ByteLength(mixed) + 5; maxBytes++) {
   assert(isValidUtf8Bytes(out), `valid UTF-8 at maxBytes=${maxBytes}`);
 }
 
-// Reads src/{background,content-script,offscreen}.js as text and extracts
-// the AUDIO_HOST_ALLOWLIST literal from each. The three files must declare
-// the same allowlist because each context re-validates URLs independently
-// (defense in depth degrades silently if one file drifts). Comments in the
-// source explicitly call out "keep in sync"; this asserts it mechanically.
-// No eval; regex extraction only so the test stays safe even if the source
-// later picks up a hostile string.
-section('AUDIO_HOST_ALLOWLIST parity across contexts');
-const allowlistFiles = [
-  'src/background.js',
-  'src/content-script.js',
-  'src/offscreen.js',
-];
-const allowlistRe = /AUDIO_HOST_ALLOWLIST\s*=\s*new\s+Set\(\[([^\]]+)\]\)/;
-const stringLiteralRe = /['"]([^'"]+)['"]/g;
-/** @type {Record<string, string[]>} */
-const allowlists = {};
-for (const file of allowlistFiles) {
-  const src = fs.readFileSync(path.join(__dirname, '../../', file), 'utf8');
-  const m = src.match(allowlistRe);
-  assert(m !== null, `${file}: AUDIO_HOST_ALLOWLIST literal located`);
-  const hosts = [];
-  let sm;
-  while ((sm = stringLiteralRe.exec(m[1])) !== null) hosts.push(sm[1]);
-  stringLiteralRe.lastIndex = 0;
-  assert(hosts.length > 0, `${file}: at least one host in allowlist`);
-  allowlists[file] = hosts.sort();
-}
-const reference = allowlists[allowlistFiles[0]].join(',');
-for (const file of allowlistFiles.slice(1)) {
-  assert(
-    allowlists[file].join(',') === reference,
-    `${file} allowlist matches ${allowlistFiles[0]} (got [${allowlists[file].join(', ')}])`
-  );
-}
+section('AUDIO_HOST_ALLOWLIST + URL guard');
+// Old test grepped each context's source for a mirrored literal. With a
+// single shared module the parity is structural; verify the guard behaves
+// as documented instead.
+assert(AUDIO_HOST_ALLOWLIST.has('upload.wikimedia.org'), 'allowlist contains upload.wikimedia.org');
+assert(AUDIO_HOST_ALLOWLIST.size === 1, 'allowlist has exactly one host (broaden carefully)');
+assert(isAllowedAudioUrl('https://upload.wikimedia.org/x.ogg'), 'allowlist allows https Wikimedia');
+assert(!isAllowedAudioUrl('http://upload.wikimedia.org/x.ogg'), 'http rejected even for allowlisted host');
+assert(!isAllowedAudioUrl('https://attacker.example/x.ogg'), 'non-allowlisted host rejected');
+assert(!isAllowedAudioUrl('https://upload.wikimedia.org.attacker.example/'), 'host suffix attack rejected');
+assert(!isAllowedAudioUrl('not a url'), 'malformed rejected');
+assert(!isAllowedAudioUrl(null), 'null rejected');
+assert(!isAllowedAudioUrl(undefined), 'undefined rejected');
+assert(!isAllowedAudioUrl(42), 'number rejected');
 
-// Same parity guarantee for the per-file byte cap. Mirrored in three
-// places because each context independently enforces it: background.js
-// (prefetch + post-read), content-script.js (drop oversize items at
-// discovery), offscreen.js (input cap before handing bytes to FFmpeg).
-// All three must agree on the literal byte budget or one layer becomes
-// weaker than another and a hostile or buggy size could slip past one
-// boundary. Regex extracts the multiplication source and compares the
-// text; this is intentionally stricter than evaluating the value because
-// a future rewrite like `5 * 1024 ** 2` would compute the same number
-// but signal inconsistent style across the codebase.
-section('Per-file byte cap parity across contexts');
-const capFiles = [
-  'src/background.js',
-  'src/content-script.js',
-  'src/offscreen.js',
-];
-const capRe = /PER_FILE_MAX_BYTES\s*=\s*([^;/\n]+?)\s*(?:;|\/\/)/;
-/** @type {Record<string, string>} */
-const capValues = {};
-for (const file of capFiles) {
-  const src = fs.readFileSync(path.join(__dirname, '../../', file), 'utf8');
-  const m = src.match(capRe);
-  assert(m !== null, `${file}: PER_FILE_MAX_BYTES declaration located`);
-  capValues[file] = m[1].trim();
-}
-const capRef = capValues[capFiles[0]];
-for (const file of capFiles.slice(1)) {
-  assert(
-    capValues[file] === capRef,
-    `${file} cap matches ${capFiles[0]} (got "${capValues[file]}", expected "${capRef}")`
-  );
-}
+section('Byte-cap invariants');
+// OUTPUT_MAX_BYTES is offscreen-local; the documented invariant is that
+// the output cap exceeds the input cap (PCM expands lossy sources so
+// transcoded WAV is always larger than the source).
+assert(OUTPUT_MAX_BYTES > PER_FILE_MAX_BYTES,
+  `OUTPUT_MAX_BYTES (${OUTPUT_MAX_BYTES}) > PER_FILE_MAX_BYTES (${PER_FILE_MAX_BYTES})`);
+assert(PER_FILE_MAX_BYTES > 0, 'PER_FILE_MAX_BYTES positive');
 
-// OUTPUT_MAX_BYTES is offscreen-local and intentionally not mirrored
-// (input cap is shared infrastructure; output cap is FFmpeg-specific
-// because PCM expands lossy sources). The real invariant we want to
-// guard against drift is that output >= input — if a future edit set
-// OUTPUT_MAX_BYTES smaller than the input cap, every transcode would
-// fail with "output over limit". Evaluate both expressions in a sandbox-
-// free way: the expressions are pure integer arithmetic with only `*`
-// and numeric literals, so a parsed-and-multiplied check is safe.
-function evalIntegerExpr(expr) {
-  // Accept only digits, *, whitespace, and `_` separators.
-  if (!/^[0-9*_\s]+$/.test(expr)) {
-    throw new Error(`unexpected characters in cap expression: ${expr}`);
-  }
-  return expr.split('*').map(t => parseInt(t.trim().replace(/_/g, ''), 10)).reduce((a, b) => a * b, 1);
-}
-const offscreenSrc = fs.readFileSync(path.join(__dirname, '../../src/offscreen.js'), 'utf8');
-const outM = offscreenSrc.match(/OUTPUT_MAX_BYTES\s*=\s*([^;/\n]+?)\s*(?:;|\/\/)/);
-assert(outM !== null, 'src/offscreen.js: OUTPUT_MAX_BYTES declaration located');
-const inputCapBytes = evalIntegerExpr(capRef);
-const outputCapBytes = evalIntegerExpr(outM[1].trim());
-assert(outputCapBytes > inputCapBytes,
-  `OUTPUT_MAX_BYTES (${outputCapBytes}) > PER_FILE_MAX_BYTES (${inputCapBytes})`);
-
-// Tests for ByteBoundedCache. Mirrored from src/background.js. The
-// invariant under test is "bytes() always equals the sum of stored entry
-// costs" across set / peek / delete / eviction paths. This is the
-// invariant the class structurally enforces, and the one that hand-
-// maintained counters used to drift on.
 section('ByteBoundedCache: invariants and eviction order');
-class ByteBoundedCache {
-  #map = new Map();
-  #bytes = 0;
-  #maxBytes;
-  #onEvict;
-  constructor(maxBytes, onEvict = null) {
-    this.#maxBytes = maxBytes;
-    this.#onEvict = onEvict;
-  }
-  size() { return this.#map.size; }
-  bytes() { return this.#bytes; }
-  has(url) { return this.#map.has(url); }
-  keys() { return this.#map.keys(); }
-  peek(url) {
-    const slot = this.#map.get(url);
-    if (!slot) return null;
-    this.#map.delete(url);
-    this.#map.set(url, slot);
-    return slot.v;
-  }
-  set(url, value, byteCost) {
-    if (this.#map.has(url)) return false;
-    if (byteCost > this.#maxBytes) return false;
-    while (this.#bytes + byteCost > this.#maxBytes && this.#map.size > 0) {
-      const oldestKey = this.#map.keys().next().value;
-      if (oldestKey === undefined) break;
-      const oldest = this.#map.get(oldestKey);
-      if (!oldest) break;
-      this.#bytes -= oldest.b;
-      if (this.#onEvict) this.#onEvict(oldest.v);
-      this.#map.delete(oldestKey);
-    }
-    this.#map.set(url, { v: value, b: byteCost });
-    this.#bytes += byteCost;
-    return true;
-  }
-  delete(url) {
-    const slot = this.#map.get(url);
-    if (!slot) return false;
-    this.#bytes -= slot.b;
-    if (this.#onEvict) this.#onEvict(slot.v);
-    this.#map.delete(url);
-    return true;
-  }
-}
-
 // Trivial case: empty cache.
 const c0 = new ByteBoundedCache(100);
 assert(c0.size() === 0, 'empty: size=0');
@@ -1031,7 +594,7 @@ c3.set('a', 'A', 10);
 c3.set('b', 'B', 10);
 c3.set('c', 'C', 10);
 assert(c3.bytes() === 30, 'three at cap: bytes=30');
-c3.set('d', 'D', 10);  // forces eviction of a
+c3.set('d', 'D', 10);
 assert(evictions.join(',') === 'A', 'oldest evicted first');
 assert(c3.has('a') === false, 'oldest gone after eviction');
 assert(c3.has('d'), 'newest present after eviction');
@@ -1043,14 +606,13 @@ const c4 = new ByteBoundedCache(30, v => evictions.push(v));
 c4.set('a', 'A', 10);
 c4.set('b', 'B', 10);
 c4.set('c', 'C', 10);
-c4.peek('a');  // a is now newest
-c4.set('d', 'D', 10);  // forces eviction; b (now oldest) should go, not a
+c4.peek('a');
+c4.set('d', 'D', 10);
 assert(evictions.join(',') === 'B', 'peek refreshed recency: b evicted instead of a');
 assert(c4.has('a'), 'a survived after peek-refresh');
 assert(c4.has('d'), 'd inserted');
 
-// Bytes invariant holds through mixed sequences (the central property the
-// class exists to enforce).
+// Bytes invariant holds through mixed sequences.
 evictions.length = 0;
 const c5 = new ByteBoundedCache(100, v => evictions.push(v));
 const ops = [
@@ -1059,14 +621,13 @@ const ops = [
   () => c5.set('z', 'Z', 40),
   () => c5.peek('x'),
   () => c5.delete('y'),
-  () => c5.set('w', 'W', 50),  // forces eviction
+  () => c5.set('w', 'W', 50),
   () => c5.peek('z'),
-  () => c5.set('v', 'V', 90),  // forces multiple evictions
+  () => c5.set('v', 'V', 90),
 ];
 for (const op of ops) op();
 let expectedBytes = 0;
 for (const k of c5.keys()) {
-  // Reach in via a side-channel (not exposed) — assert via peek invariant
   expectedBytes += ({ x: 30, y: 25, z: 40, w: 50, v: 90 })[k] || 0;
 }
 assert(c5.bytes() === expectedBytes,

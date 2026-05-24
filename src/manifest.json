@@ -45,5 +45,11 @@
       "js": ["content-script.js"],
       "run_at": "document_end"
     }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["content/*.mjs", "shared/*.mjs"],
+      "matches": ["https://*.wiktionary.org/*"]
+    }
   ]
 }

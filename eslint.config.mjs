@@ -2,7 +2,7 @@ import globals from "globals";
 
 export default [
   {
-    files: ["src/**/*.js"],
+    files: ["src/**/*.js", "src/**/*.mjs"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "script",
@@ -36,7 +36,10 @@ export default [
     }
   },
   {
-    files: ["src/offscreen.js"],
+    // Module-syntax files (offscreen, background, all shared .mjs). The
+    // content script stays scriptType because MV3 manifest content_scripts
+    // can't declare module type.
+    files: ["src/offscreen.js", "src/background.js", "src/**/*.mjs"],
     languageOptions: {
       sourceType: "module",
     }
@@ -45,6 +48,15 @@ export default [
     files: ["tests/**/*.js"],
     languageOptions: {
       sourceType: "commonjs",
+      globals: {
+        ...globals.node,
+      }
+    }
+  },
+  {
+    files: ["tests/**/*.mjs"],
+    languageOptions: {
+      sourceType: "module",
       globals: {
         ...globals.node,
       }

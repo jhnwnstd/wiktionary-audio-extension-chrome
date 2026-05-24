@@ -1,10 +1,24 @@
 // @ts-check
 // background.js: Service worker for Wiktionary audio downloads.
 //
-// IIFE keeps `DEBUG`, `log`, `logError` file scoped so they don't collide
-// with the same identifiers in content-script.js under the project's
-// jsconfig. Service worker behavior is unchanged.
-(() => {
+// Module scope (manifest declares `"type": "module"`) gives us per-file
+// identifier isolation, so the older IIFE wrapper is gone. Shared logic
+// (caps, allowlist, filename sanitization, cache class) is imported from
+// src/shared/ so a single source of truth covers SW, offscreen, content
+// script, and tests.
+
+import {
+  PER_FILE_MAX_BYTES,
+  PREFETCH_CACHE_MAX_BYTES,
+  PREFETCH_CONCURRENCY,
+  DATA_URL_THRESHOLD_BYTES,
+  TRANSCODED_CACHE_MAX_BYTES,
+  DISMISSED_URLS_MAX,
+} from './shared/limits.mjs';
+import { isAllowedAudioUrl } from './shared/audio-allowlist.mjs';
+import { sanitizeFilename } from './shared/sanitize-filename.mjs';
+import { pathWithFolder } from './shared/paths.mjs';
+import { ByteBoundedCache } from './shared/byte-bounded-cache.mjs';
 
 const DEBUG = false;
 const log = DEBUG ? console.log.bind(console) : () => {};
@@ -14,88 +28,13 @@ const logError = console.error.bind(console);
 function arrayBufferToBase64(arrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
   // 8 KB chunks avoid `Maximum call stack size exceeded` from large spreads.
-  // No "fast path" for small inputs since Convert output is 96 KB/sec PCM
-  // and every real conversion exceeds the small payload threshold anyway.
+  // Only used for cached Original-mode files under DATA_URL_THRESHOLD_BYTES
+  // (512 KB); anything larger goes out as the source URL instead.
   let bin = '';
   for (let i = 0; i < bytes.length; i += 8192) {
     bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
   }
   return btoa(bin);
-}
-
-// Cross platform filename sanitizer covering the union of Windows, macOS,
-// and Linux filesystem restrictions. Preserves Unicode (e.g. 水, café) but
-// enforces a 255 byte UTF-8 cap, since most real filesystems use byte
-// length not codepoint length. A 100 character Chinese filename is ~300
-// bytes on disk.
-//
-// Rules enforced:
-//   * forbidden chars: < > : " / \ | ? * and control chars 0x00-0x1F
-//   * Windows reserved basenames: CON, PRN, AUX, NUL, COM1-9, LPT1-9
-//   * Windows forbids trailing space or period
-//   * leading dots stripped (avoids Unix hidden-file surprise)
-//   * 255 byte UTF-8 cap, preserving extension when possible
-//   * never empty: falls back to "audio"
-
-const WINDOWS_RESERVED_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
-const FORBIDDEN_CHARS_RE = /[<>:"/\\|?*\x00-\x1f]/g;
-const UTF8_ENCODER = new TextEncoder();
-const UTF8_DECODER = new TextDecoder();
-
-/** @param {string} s */
-function utf8ByteLength(s) {
-  return UTF8_ENCODER.encode(s).length;
-}
-
-/**
- * Truncate `s` to at most `maxBytes` UTF-8 bytes without splitting a
- * multi-byte code point. Encode once, then walk back from the limit to
- * the nearest code-point boundary (a byte that is not a UTF-8
- * continuation byte: continuation bytes have the bit pattern 10xxxxxx).
- * O(n) instead of the previous O(n^2) per-char slice-and-reencode loop.
- *
- * @param {string} s
- * @param {number} maxBytes
- * @returns {string}
- */
-function truncateToBytes(s, maxBytes) {
-  const bytes = UTF8_ENCODER.encode(s);
-  if (bytes.length <= maxBytes) return s;
-  let cut = maxBytes;
-  while (cut > 0 && (bytes[cut] & 0xc0) === 0x80) cut--;
-  return UTF8_DECODER.decode(bytes.subarray(0, cut));
-}
-
-/**
- * Sanitize a filename to be safe across Windows, macOS, and Linux file
- * systems while preserving Unicode characters.
- * @param {unknown} filename
- * @returns {string}
- */
-function sanitizeFilename(filename) {
-  if (typeof filename !== 'string' || !filename) return 'audio';
-
-  let s = filename
-    .split('?')[0].split('#')[0]
-    .replace(FORBIDDEN_CHARS_RE, '_')
-    .replace(/\s+/g, ' ')
-    .replace(/^\.+/, '')
-    .replace(/[. ]+$/, '')
-    .trim();
-
-  if (WINDOWS_RESERVED_RE.test(s)) s = '_' + s;
-
-  if (utf8ByteLength(s) > 255) {
-    const extIdx = s.lastIndexOf('.');
-    if (extIdx > 0 && s.length - extIdx <= 16) {
-      const ext = s.slice(extIdx);
-      s = truncateToBytes(s.slice(0, extIdx), 255 - utf8ByteLength(ext)) + ext;
-    } else {
-      s = truncateToBytes(s, 255);
-    }
-  }
-
-  return s || 'audio';
 }
 
 /**
@@ -251,132 +190,6 @@ function revokeBlobInOffscreen(blobUrl) {
 // Original and Convert paths. Bounded by total bytes; LRU evicted; lost
 // on SW restart. The next click just refetches via the existing URL path.
 
-const PREFETCH_CACHE_MAX_BYTES = 20 * 1024 * 1024; // 20 MB
-const PREFETCH_CONCURRENCY = 3;
-
-// Per-file cap. Wiktionary pronunciation audio is consistently 10-500 KB;
-// anything bigger is either an anomaly or hostile, and we'd rather waste
-// the round trip than blow the cache budget on a single file.
-const PER_FILE_MAX_BYTES = 5 * 1024 * 1024; // 5 MB
-
-// Original-mode threshold: cached files below this go out as a data URL
-// (saves a network round-trip); larger files use the source URL directly
-// (chrome.downloads' fetch hits the browser HTTP cache from our prefetch,
-// avoiding the base64 expansion + giant data URL string). 512 KB is well
-// above typical pronunciation file size, so the common case stays cheap.
-const DATA_URL_THRESHOLD_BYTES = 512 * 1024;
-
-// Allowlist of hostnames that may serve audio bytes. Wikimedia serves all
-// Wiktionary pronunciation audio from upload.wikimedia.org; nothing else
-// should appear in any API response or message. Mirrored in
-// content-script.js -- keep in sync.
-const AUDIO_HOST_ALLOWLIST = new Set(['upload.wikimedia.org']);
-
-/** @param {string} url */
-function isAllowedAudioUrl(url) {
-  if (typeof url !== 'string') return false;
-  try {
-    const u = new URL(url);
-    return u.protocol === 'https:' && AUDIO_HOST_ALLOWLIST.has(u.hostname);
-  } catch { return false; }
-}
-
-/**
- * Insertion-order LRU bounded by total bytes (not item count). The single
- * invariant being structurally enforced — `bytes()` equals the sum of all
- * entry byte costs — used to be five hand-coordinated mutations across
- * peek/add/dismiss; now no path outside this class can desync the counter.
- *
- * Eviction calls the optional `onEvict(value)` callback before removing
- * the entry, so the transcoded-cache instance can revoke its blob URL
- * automatically. The raw-bytes instance passes no callback (ArrayBuffers
- * are GC'd when references drop).
- *
- * Entries are wrapped internally as {v, b} so a single API works for both
- * ArrayBuffer payloads and richer structs.
- *
- * @template V
- */
-class ByteBoundedCache {
-  /** @type {Map<string, { v: V, b: number }>} */
-  #map = new Map();
-  #bytes = 0;
-  #maxBytes;
-  /** @type {((value: V) => void) | null} */
-  #onEvict;
-
-  /**
-   * @param {number} maxBytes
-   * @param {((value: V) => void) | null} [onEvict]
-   */
-  constructor(maxBytes, onEvict = null) {
-    this.#maxBytes = maxBytes;
-    this.#onEvict = onEvict;
-  }
-
-  size() { return this.#map.size; }
-  bytes() { return this.#bytes; }
-  /** @param {string} url */
-  has(url) { return this.#map.has(url); }
-  keys() { return this.#map.keys(); }
-
-  /**
-   * Return the value for `url` (refreshing recency) or null. Delete +
-   * re-insert moves the URL to the tail so eviction (which pops the head)
-   * targets older entries first.
-   * @param {string} url
-   * @returns {V | null}
-   */
-  peek(url) {
-    const slot = this.#map.get(url);
-    if (!slot) return null;
-    this.#map.delete(url);
-    this.#map.set(url, slot);
-    return slot.v;
-  }
-
-  /**
-   * Insert `value` with declared `byteCost`. Returns true on insert, false
-   * if refused (already present, or alone larger than the cap). On refusal
-   * the caller still owns the value and onEvict is NOT called for it.
-   * Evicts oldest entries until the new entry fits.
-   * @param {string} url
-   * @param {V} value
-   * @param {number} byteCost
-   * @returns {boolean}
-   */
-  set(url, value, byteCost) {
-    if (this.#map.has(url)) return false;
-    if (byteCost > this.#maxBytes) return false;
-    while (this.#bytes + byteCost > this.#maxBytes && this.#map.size > 0) {
-      const oldestKey = this.#map.keys().next().value;
-      if (oldestKey === undefined) break;
-      const oldest = this.#map.get(oldestKey);
-      if (!oldest) break;
-      this.#bytes -= oldest.b;
-      if (this.#onEvict) this.#onEvict(oldest.v);
-      this.#map.delete(oldestKey);
-    }
-    this.#map.set(url, { v: value, b: byteCost });
-    this.#bytes += byteCost;
-    return true;
-  }
-
-  /**
-   * Remove `url`'s entry if present (calling onEvict on the value).
-   * @param {string} url
-   * @returns {boolean}  whether an entry was removed
-   */
-  delete(url) {
-    const slot = this.#map.get(url);
-    if (!slot) return false;
-    this.#bytes -= slot.b;
-    if (this.#onEvict) this.#onEvict(slot.v);
-    this.#map.delete(url);
-    return true;
-  }
-}
-
 /** @type {ByteBoundedCache<ArrayBuffer>} */
 const audioCache = new ByteBoundedCache(PREFETCH_CACHE_MAX_BYTES);
 
@@ -397,8 +210,6 @@ const inflightPrefetches = new Map();
 //
 // Bounded by total bytes; LRU evicted; lost on SW restart. The WAV cache
 // shares the same 20 MB budget shape as the source-bytes cache.
-
-const TRANSCODED_CACHE_MAX_BYTES = 20 * 1024 * 1024;
 
 /** @typedef {{ blobUrl: string, filename: string, byteLength: number }} TranscodedEntry */
 
@@ -423,13 +234,7 @@ const transcodeInflight = new Map();
 // PREFETCH_AUDIO for the same URL clears the tombstone (re-engagement).
 //
 // Bounded with insertion-order LRU eviction. JS Sets iterate in insertion
-// order, so the first key is the oldest. Without this cap the set would
-// grow monotonically across a long browsing session (every dismissed URL
-// stays forever) which is a quiet memory leak. 512 is several pages worth
-// of pronunciation audio; the only cost of evicting too early is that a
-// late-arriving speculative transcode could repopulate the cache for a URL
-// the user dismissed a very long time ago.
-const DISMISSED_URLS_MAX = 512;
+// order, so the first key is the oldest.
 /** @type {Set<string>} */
 const dismissedUrls = new Set();
 
@@ -648,10 +453,9 @@ async function prefetchAudio(items) {
           if (!ct.startsWith('audio/') && ct.split(';')[0].trim() !== 'application/ogg') continue;
           // Cheap defense against pathological inputs: bail before reading
           // the body if Wikimedia reports a size larger than any real
-          // pronunciation file. Saves bandwidth and prevents cache thrash.
-          // Number.isFinite filters out NaN (parseInt on a non-numeric
-          // header) and Infinity; on either we just fall through and let
-          // the post-read length check do the work.
+          // pronunciation file. Number.isFinite filters out NaN (parseInt
+          // on a non-numeric header) and Infinity; on either we just fall
+          // through and let the post-read length check do the work.
           const declared = parseInt(r.headers.get('Content-Length') || '0', 10);
           if (Number.isFinite(declared) && declared > PER_FILE_MAX_BYTES) {
             controller.abort();
@@ -704,21 +508,6 @@ function dismissUrls(urls) {
     audioCache.delete(url);
     transcodedCache.delete(url);
   }
-}
-
-/**
- * Prepend an optional subfolder to a sanitized filename. Folder and file
- * are sanitized independently so neither can inject a `/`. chrome.downloads
- * accepts forward slashes cross-platform and creates intermediate dirs.
- *
- * @param {string | undefined | null} folder
- * @param {string} filename
- * @returns {string}
- */
-function pathWithFolder(folder, filename) {
-  const file = sanitizeFilename(filename);
-  if (!folder) return file;
-  return sanitizeFilename(folder) + '/' + file;
 }
 
 /**
@@ -938,5 +727,3 @@ globalThis._wadInspectAudioCache = () => {
     transcodeInflight: [...transcodeInflight.keys()],
   };
 };
-
-})();

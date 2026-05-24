@@ -11,6 +11,6 @@
     "noImplicitAny": false,
     "strictNullChecks": false
   },
-  "include": ["src/**/*.js", "src/globals.d.ts"],
+  "include": ["src/**/*.js", "src/**/*.mjs", "src/globals.d.ts"],
   "exclude": ["node_modules", "src/vendor"]
 }

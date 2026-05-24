@@ -1,33 +1,12 @@
 // offscreen.js: FFmpeg.wasm audio conversion (MV3 module, CSP safe).
 
+import { PER_FILE_MAX_BYTES, OUTPUT_MAX_BYTES } from "./shared/limits.mjs";
+import { isAllowedAudioUrl } from "./shared/audio-allowlist.mjs";
+import { FFmpeg } from "./vendor/ffmpeg/ffmpeg.mjs";
+
 const DEBUG = false;
 const log = DEBUG ? console.log.bind(console) : () => {};
 const logError = console.error.bind(console);
-
-// Hard size caps. PER_FILE_MAX_BYTES is the per-fetch input cap; mirrored
-// in background.js and content-script.js (a unit test asserts parity).
-// OUTPUT_MAX_BYTES is offscreen-local: PCM expands lossy sources, so the
-// output cap is necessarily larger than the input. 16 MB covers the worst
-// case from `-t 120` (~12 MB) with a safety margin if the duration flag
-// misbehaves; invariant `OUTPUT_MAX_BYTES > PER_FILE_MAX_BYTES` is
-// asserted by the parity test.
-const PER_FILE_MAX_BYTES = 5 * 1024 * 1024;
-const OUTPUT_MAX_BYTES = 16 * 1024 * 1024;
-
-// Allowlist for srcUrl. Mirrored locally because offscreen is a privileged
-// context and should not implicitly trust a URL just because background
-// forwarded it.
-const AUDIO_HOST_ALLOWLIST = new Set(['upload.wikimedia.org']);
-/** @param {string} url */
-function isAllowedAudioUrl(url) {
-  if (typeof url !== 'string') return false;
-  try {
-    const u = new URL(url);
-    return u.protocol === 'https:' && AUDIO_HOST_ALLOWLIST.has(u.hostname);
-  } catch { return false; }
-}
-
-import { FFmpeg } from "./vendor/ffmpeg/ffmpeg.mjs";
 
 const coreURL = chrome.runtime.getURL("vendor/ffmpeg/core/ffmpeg-core.js");
 const wasmURL = chrome.runtime.getURL("vendor/ffmpeg/core/ffmpeg-core.wasm");
