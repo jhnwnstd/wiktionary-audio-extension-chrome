@@ -93,7 +93,7 @@ const oggPages = [
   { title: 'File:Nl-topper.ogg', imageinfo: [{ url: 'https://upload.wikimedia.org/wikipedia/commons/8/85/Nl-topper.ogg', mime: 'application/ogg', mediatype: 'AUDIO' }] },
 ];
 assert(audioItemsFromPages(oggPages).length === 2, '2 OGG files with mediatype=AUDIO');
-assert(audioItemsFromPages(null).length === 0, 'null pages');
+assert(audioItemsFromPages(/** @type {any} */ (null)).length === 0, 'null pages');
 assert(audioItemsFromPages([]).length === 0, 'empty pages array');
 assert(audioItemsFromPages(/** @type {any} */ ({ '-1': { title: 'File:t.ogg' } })).length === 0, 'rejects v1 object form');
 assert(audioItemsFromPages([{ title: 'File:t.ogg' }]).length === 0, 'no imageinfo');
@@ -547,8 +547,8 @@ assert(!isAllowedAudioUrl('http://upload.wikimedia.org/x.ogg'), 'http rejected e
 assert(!isAllowedAudioUrl('https://attacker.example/x.ogg'), 'non-allowlisted host rejected');
 assert(!isAllowedAudioUrl('https://upload.wikimedia.org.attacker.example/'), 'host suffix attack rejected');
 assert(!isAllowedAudioUrl('not a url'), 'malformed rejected');
-assert(!isAllowedAudioUrl(null), 'null rejected');
-assert(!isAllowedAudioUrl(undefined), 'undefined rejected');
+assert(!isAllowedAudioUrl(/** @type {any} */ (null)), 'null rejected');
+assert(!isAllowedAudioUrl(/** @type {any} */ (undefined)), 'undefined rejected');
 assert(!isAllowedAudioUrl(/** @type {any} */ (42)), 'number rejected');
 
 section('Byte-cap invariants');
@@ -725,18 +725,15 @@ function scriptedGet(...steps) {
 // 4. onChanged invalidates the cache.
 {
   /** @type {((changes: any, area: string) => void) | null} */
-  let listener = null;
+  let listener = /** @type {((changes: any, area: string) => void) | null} */ (null);
   const { get, calls } = scriptedGet('convert', 'both');
   const getMode = createModeCache({
     get,
     onChanged: (cb) => { listener = cb; },
   });
   assert((await getMode()) === 'convert', 'initial value cached');
-  assert(listener !== null, 'onChanged was registered');
-  // Simulate the popup changing the mode.
-  /** @type {(changes: any, area: string) => void} */
-  const l = listener;
-  l({ mode: { newValue: 'both' } }, 'sync');
+  if (listener === null) throw new Error('onChanged never registered');
+  listener({ mode: { newValue: 'both' } }, 'sync');
   assert((await getMode()) === 'both', 'cache invalidated; next call re-fetches');
   assert(calls.length === 2, 'two fetches: initial + post-invalidation');
 }
@@ -744,17 +741,16 @@ function scriptedGet(...steps) {
 // 5. onChanged ignores irrelevant changes (different area, different key).
 {
   /** @type {((changes: any, area: string) => void) | null} */
-  let listener = null;
+  let listener = /** @type {((changes: any, area: string) => void) | null} */ (null);
   const { get, calls } = scriptedGet('convert');
   const getMode = createModeCache({
     get,
     onChanged: (cb) => { listener = cb; },
   });
   assert((await getMode()) === 'convert', 'initial value cached');
-  /** @type {(changes: any, area: string) => void} */
-  const l = listener;
-  l({ mode: { newValue: 'both' } }, 'local');   // wrong area
-  l({ unrelated: { newValue: 'x' } }, 'sync');  // unrelated key
+  if (listener === null) throw new Error('onChanged never registered');
+  listener({ mode: { newValue: 'both' } }, 'local');   // wrong area
+  listener({ unrelated: { newValue: 'x' } }, 'sync');  // unrelated key
   assert((await getMode()) === 'convert', 'cache survived irrelevant changes');
   assert(calls.length === 1, 'no second fetch');
 }
