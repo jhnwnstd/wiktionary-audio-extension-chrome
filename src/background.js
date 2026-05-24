@@ -572,6 +572,13 @@ chrome.runtime.onMessage.addListener(
     // blocks become 'interrupted' and surface as a failure.
     const downloadId = await chrome.downloads.download(opts);
     const state = await waitForDownloadComplete(downloadId);
+    // Eager cleanup for the convert path: once the download terminates,
+    // the transcoded WAV has served its purpose. Evicting now triggers
+    // the onEvict callback that revokes the blob URL in offscreen, so
+    // memory doesn't accumulate across a convert-heavy session. A re-
+    // click pays a re-transcode; the "Downloaded" button state means
+    // that's rare in practice.
+    if (mode === 'convert') transcodedCache.delete(url);
     if (state === 'complete') {
       sendResponse({ ok: true });
     } else {

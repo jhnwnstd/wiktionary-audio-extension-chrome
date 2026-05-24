@@ -3,7 +3,16 @@
 import { PER_FILE_MAX_BYTES, OUTPUT_MAX_BYTES } from "./shared/limits.mjs";
 import { isAllowedAudioUrl } from "./shared/audio-allowlist.mjs";
 import { isAudioContentType } from "./shared/content-type.mjs";
+import { createBlobRegistry } from "./shared/blob-registry.mjs";
 import { FFmpeg } from "./vendor/ffmpeg/ffmpeg.mjs";
+
+// Backstop GC: if SW restarts between speculative transcode and user
+// click, the SW's transcodedCache loses its bookkeeping but the blob is
+// still in this document's heap. TTL + count cap clean it up here so the
+// orphan can't accumulate across a session of conversions.
+const blobRegistry = createBlobRegistry({
+  revoke: (url) => { try { URL.revokeObjectURL(url); } catch { /* gone */ } },
+});
 
 const DEBUG = false;
 const log = DEBUG ? console.log.bind(console) : () => {};
@@ -102,6 +111,7 @@ chrome.runtime.onConnect.addListener(port => {
       const url = msg.blobUrl;
       if (typeof url === 'string') {
         try { URL.revokeObjectURL(url); } catch { /* already gone */ }
+        blobRegistry.unregister(url);
       }
       return;
     }
@@ -169,6 +179,9 @@ chrome.runtime.onConnect.addListener(port => {
         // Array.from(Uint8Array) + base64 through the runtime port.
         const blob = new Blob([out], { type: 'audio/wav' });
         const blobUrl = URL.createObjectURL(blob);
+        // Register so the LRU+TTL backstop can revoke us if the SW
+        // forgets (SW restart between speculation and click).
+        blobRegistry.register(blobUrl);
         port.postMessage({
           ok: true,
           filename: outName,

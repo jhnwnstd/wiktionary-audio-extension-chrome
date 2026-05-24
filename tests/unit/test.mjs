@@ -788,6 +788,93 @@ assert(!isAudioContentType(''), 'empty string rejected');
 assert(!isAudioContentType(null), 'null rejected');
 assert(!isAudioContentType(undefined), 'undefined rejected');
 
+section('createBlobRegistry: orphan-blob backstop');
+const { createBlobRegistry } = await import('../../src/shared/blob-registry.mjs');
+
+// Helper: build a registry with a fake revoke + a controllable clock.
+function buildRegistry({ ttlMs = 1000, maxEntries = 4 } = {}) {
+  const revoked = [];
+  let now = 1_000_000;
+  const reg = createBlobRegistry({
+    revoke: (u) => { revoked.push(u); },
+    now: () => now,
+    ttlMs,
+    maxEntries,
+  });
+  return { reg, revoked, advance(ms) { now += ms; } };
+}
+
+// Basic register + unregister.
+{
+  const { reg, revoked } = buildRegistry();
+  reg.register('blob:a');
+  assert(reg.size() === 1, 'register: size=1');
+  assert(reg.has('blob:a'), 'register: has');
+  reg.unregister('blob:a');
+  assert(reg.size() === 0, 'unregister: size=0');
+  assert(!reg.has('blob:a'), 'unregister: !has');
+  assert(revoked.length === 0, 'unregister does NOT call revoke (caller did it)');
+}
+
+// Reregister moves URL to the tail (refreshes LRU).
+{
+  const { reg } = buildRegistry({ maxEntries: 3 });
+  reg.register('a'); reg.register('b'); reg.register('c');
+  reg.register('a');  // re-register moves a to tail
+  reg.register('d');  // forces eviction; b should go, not a
+  assert(reg.has('a'), 'reregistered a survives');
+  assert(!reg.has('b'), 'b evicted');
+  assert(reg.has('c') && reg.has('d'), 'c and d present');
+}
+
+// Count cap: oldest evicted (and revoked) when over.
+{
+  const { reg, revoked } = buildRegistry({ maxEntries: 3 });
+  reg.register('a'); reg.register('b'); reg.register('c'); reg.register('d');
+  assert(reg.size() === 3, 'count cap holds at 3');
+  assert(revoked.join(',') === 'a', 'oldest revoked first');
+  assert(!reg.has('a') && reg.has('b') && reg.has('c') && reg.has('d'));
+}
+
+// TTL sweep on register.
+{
+  const { reg, revoked, advance } = buildRegistry({ ttlMs: 500 });
+  reg.register('old');
+  advance(600);
+  reg.register('new');  // sweep triggers; 'old' is past TTL
+  assert(!reg.has('old'), 'TTL: old gone');
+  assert(reg.has('new'), 'TTL: new present');
+  assert(revoked.join(',') === 'old', 'TTL: old revoked');
+}
+
+// TTL sweep is insertion-order-aware (breaks early once it sees a fresh).
+{
+  const { reg, revoked, advance } = buildRegistry({ ttlMs: 500 });
+  reg.register('old1');
+  advance(100);
+  reg.register('old2');
+  advance(500);  // old1 now 600ms old, old2 500ms old; only old1 past TTL
+  reg.register('new');
+  assert(!reg.has('old1'), 'TTL: old1 gone (>500ms)');
+  // old2 is exactly at TTL boundary; allow either kept or gone.
+  assert(reg.has('new'), 'TTL: new present');
+  assert(revoked.includes('old1'), 'TTL: old1 revoked');
+}
+
+// Throwing revoke doesn't break the registry; entry is still removed.
+{
+  const reg = createBlobRegistry({
+    revoke: () => { throw new Error('boom'); },
+    now: () => 0,
+    maxEntries: 1,
+  });
+  reg.register('a');
+  reg.register('b');  // forces eviction of a; revoke throws
+  assert(!reg.has('a'), 'throwing revoke: entry still removed');
+  assert(reg.has('b'), 'throwing revoke: new entry inserted');
+  assert(reg.size() === 1, 'registry size correct after throw');
+}
+
 // ============ SUMMARY ============
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
