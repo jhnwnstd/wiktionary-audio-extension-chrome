@@ -1,6 +1,6 @@
 {
   "name": "wiktionary-audio-extension-chrome",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "description": "Chrome extension (Manifest V3) that finds pronunciation audio on any Wiktionary page and lets you download the original file or convert it to WAV locally via FFmpeg.wasm. No servers, no remote code.",
   "main": "background.js",
   "scripts": {
