@@ -707,7 +707,10 @@ function showFeedback(button, message, kind = 'success') {
 
   button.textContent = message;
   button.style.background = FEEDBACK_COLORS[kind] || FEEDBACK_COLORS.success;
-  button.disabled = true;
+  // success keeps the button clickable so the user can re-download. progress
+  // disables while work is in flight; error/partial disable briefly then
+  // auto-reset back to the idle state.
+  button.disabled = kind !== 'success';
 
   // progress and success stay until something else replaces them. Only
   // error and partial auto-clear.

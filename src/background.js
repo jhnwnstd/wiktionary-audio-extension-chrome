@@ -487,6 +487,46 @@ function pathWithFolder(folder, filename) {
   return sanitizeFilename(folder) + '/' + file;
 }
 
+/**
+ * Wait for a chrome.downloads download to reach a terminal state. Resolves
+ * with the final state string (e.g. 'complete' or 'interrupted') so callers
+ * can distinguish "the file actually landed" from "the user cancelled the
+ * Save As dialog" or "the browser blocked the download".
+ *
+ * @param {number} downloadId
+ * @param {number} [timeoutMs]
+ * @returns {Promise<string>}
+ */
+function waitForDownloadComplete(downloadId, timeoutMs = 60000) {
+  return new Promise((resolve, reject) => {
+    /** @param {any} delta */
+    const onChanged = (delta) => {
+      if (delta.id !== downloadId) return;
+      const next = delta.state?.current;
+      if (next === 'complete' || next === 'interrupted') {
+        chrome.downloads.onChanged.removeListener(onChanged);
+        clearTimeout(timer);
+        resolve(next);
+      }
+    };
+    const timer = setTimeout(() => {
+      chrome.downloads.onChanged.removeListener(onChanged);
+      reject(new Error(`download timeout (${timeoutMs}ms)`));
+    }, timeoutMs);
+    chrome.downloads.onChanged.addListener(onChanged);
+    // Race: download might already be terminal before our listener attached.
+    // search() is the authoritative current state.
+    chrome.downloads.search({ id: downloadId }, /** @param {any[]} items */ (items) => {
+      const item = items?.[0];
+      if (item && (item.state === 'complete' || item.state === 'interrupted')) {
+        chrome.downloads.onChanged.removeListener(onChanged);
+        clearTimeout(timer);
+        resolve(item.state);
+      }
+    });
+  });
+}
+
 chrome.runtime.onMessage.addListener(
   /**
    * @param {any} msg  arbitrary content; we narrow on `msg.type`
@@ -534,6 +574,8 @@ chrome.runtime.onMessage.addListener(
 
   (async () => {
     const cached = takeCached(url);
+    /** @type {chrome.downloads.DownloadOptions} */
+    let opts;
     if (mode === 'convert') {
       // transcodeForUrl returns immediately if the WAV is cached (speculative
       // pre-transcode already ran), awaits any in-flight transcode for this
@@ -542,12 +584,11 @@ chrome.runtime.onMessage.addListener(
       log('[Background] Converting:', originalFilename, folder ? `-> ${folder}/` : '');
       const { filename, arrayBuffer } = await transcodeForUrl(url, cached || url, baseName);
       const base64 = arrayBufferToBase64(arrayBuffer);
-      const dataUrl = `data:audio/wav;base64,${base64}`;
-      await chrome.downloads.download({
-        url: dataUrl,
+      opts = {
+        url: `data:audio/wav;base64,${base64}`,
         filename: pathWithFolder(folder, filename),
-        saveAs: false
-      });
+        saveAs: false,
+      };
     } else if (cached) {
       // Original mode with cached bytes: skip the chrome.downloads URL fetch
       // by handing it a data URL built from the bytes we already have.
@@ -556,22 +597,32 @@ chrome.runtime.onMessage.addListener(
       // browser to skip the "Save As..." chooser, which matters for batch
       // downloads where prompting per file is unusable.
       log('[Background] Downloading original (cached):', originalFilename, folder ? `-> ${folder}/` : '');
-      const base64 = arrayBufferToBase64(cached);
-      const dataUrl = `data:application/octet-stream;base64,${base64}`;
-      await chrome.downloads.download({
-        url: dataUrl,
+      opts = {
+        url: `data:application/octet-stream;base64,${arrayBufferToBase64(cached)}`,
         filename: pathWithFolder(folder, originalFilename),
-        saveAs: false
-      });
+        saveAs: false,
+      };
     } else {
       log('[Background] Downloading original:', originalFilename, folder ? `-> ${folder}/` : '');
-      await chrome.downloads.download({
+      opts = {
         url,
         filename: pathWithFolder(folder, originalFilename),
-        saveAs: false
-      });
+        saveAs: false,
+      };
     }
-    sendResponse({ ok: true });
+
+    // chrome.downloads.download resolves once the download is INITIATED
+    // (returns the downloadId), not when the file actually lands. We then
+    // wait for the terminal state so the panel only flips to "Downloaded"
+    // when a file actually reached disk; user cancellations and policy
+    // blocks become 'interrupted' and surface as a failure.
+    const downloadId = await chrome.downloads.download(opts);
+    const state = await waitForDownloadComplete(downloadId);
+    if (state === 'complete') {
+      sendResponse({ ok: true });
+    } else {
+      sendResponse({ ok: false, error: state });
+    }
   })().catch(error => {
     logError('[Background] Download error:', error.message);
     sendResponse({ ok: false, error: error.message });

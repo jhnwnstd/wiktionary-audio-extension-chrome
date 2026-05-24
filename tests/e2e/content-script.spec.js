@@ -297,6 +297,9 @@ test.describe('content script audio discovery', () => {
     await expect(btnB).not.toContainText(/Downloaded/);
     await expect(btnAll).not.toContainText(/Downloaded/);
 
+    // Downloaded buttons stay clickable so the user can re-download.
+    await expect(btnA).toBeEnabled();
+
     // Click the second individual download. Now both items are downloaded,
     // so Download All should auto-flip to Downloaded without being clicked.
     await btnB.click();
