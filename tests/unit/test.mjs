@@ -674,6 +674,103 @@ assert(deleteThrew, 'throwing onEvict propagates from delete too');
 assert(c9.has('a') === false, 'delete: entry gone even though onEvict threw');
 assert(c9.bytes() === 0, 'delete: #bytes correct even though onEvict threw');
 
+section('createModeCache: transient failure does not poison the cache');
+const { createModeCache } = await import('../../src/shared/mode-cache.mjs');
+
+// Helper: build a `get` that scripts a sequence of returns. Each call
+// pops the next entry; a string resolves, an Error rejects.
+function scriptedGet(...steps) {
+  let i = 0;
+  const calls = [];
+  const get = async () => {
+    calls.push(i);
+    const step = steps[i++];
+    if (step instanceof Error) throw step;
+    return { mode: step };
+  };
+  return { get, calls };
+}
+
+// 1. Happy path: first call hits storage, subsequent calls hit cache.
+{
+  const { get, calls } = scriptedGet('convert', 'both' /* never reached */);
+  const getMode = createModeCache({ get });
+  assert((await getMode()) === 'convert', 'first call resolves to convert');
+  assert((await getMode()) === 'convert', 'second call also returns convert');
+  assert((await getMode()) === 'convert', 'third call also returns convert');
+  assert(calls.length === 1, 'storage was only hit once after first resolution');
+}
+
+// 2. Concurrent calls during the first await share the same Promise.
+{
+  const { get, calls } = scriptedGet('both');
+  const getMode = createModeCache({ get });
+  const [a, b, c] = await Promise.all([getMode(), getMode(), getMode()]);
+  assert(a === 'both' && b === 'both' && c === 'both', 'all concurrent calls see same value');
+  assert(calls.length === 1, 'concurrent calls deduped to single storage round-trip');
+}
+
+// 3. Transient failure returns 'original' but does NOT cache it.
+//    The next call retries and gets the real preference.
+{
+  const { get, calls } = scriptedGet(new Error('transport'), 'convert');
+  const getMode = createModeCache({ get });
+  assert((await getMode()) === 'original', 'failure: returns original for this call');
+  assert((await getMode()) === 'convert', 'next call retries and gets real value');
+  assert(calls.length === 2, 'two storage round-trips: one failed, one retried');
+  assert((await getMode()) === 'convert', 'subsequent call uses cached real value');
+  assert(calls.length === 2, 'no third round-trip after successful cache');
+}
+
+// 4. onChanged invalidates the cache.
+{
+  /** @type {((changes: any, area: string) => void) | null} */
+  let listener = null;
+  const { get, calls } = scriptedGet('convert', 'both');
+  const getMode = createModeCache({
+    get,
+    onChanged: (cb) => { listener = cb; },
+  });
+  assert((await getMode()) === 'convert', 'initial value cached');
+  assert(listener !== null, 'onChanged was registered');
+  // Simulate the popup changing the mode.
+  /** @type {(changes: any, area: string) => void} */
+  const l = listener;
+  l({ mode: { newValue: 'both' } }, 'sync');
+  assert((await getMode()) === 'both', 'cache invalidated; next call re-fetches');
+  assert(calls.length === 2, 'two fetches: initial + post-invalidation');
+}
+
+// 5. onChanged ignores irrelevant changes (different area, different key).
+{
+  /** @type {((changes: any, area: string) => void) | null} */
+  let listener = null;
+  const { get, calls } = scriptedGet('convert');
+  const getMode = createModeCache({
+    get,
+    onChanged: (cb) => { listener = cb; },
+  });
+  assert((await getMode()) === 'convert', 'initial value cached');
+  /** @type {(changes: any, area: string) => void} */
+  const l = listener;
+  l({ mode: { newValue: 'both' } }, 'local');   // wrong area
+  l({ unrelated: { newValue: 'x' } }, 'sync');  // unrelated key
+  assert((await getMode()) === 'convert', 'cache survived irrelevant changes');
+  assert(calls.length === 1, 'no second fetch');
+}
+
+// 6. Unknown mode values coerce to 'original'.
+{
+  const { get } = scriptedGet('garbage');
+  const getMode = createModeCache({ get });
+  assert((await getMode()) === 'original', 'unknown string coerced to original');
+}
+{
+  const { get } = scriptedGet(undefined);
+  const getMode = createModeCache({ get });
+  assert((await getMode()) === 'original', 'missing mode defaults to original');
+}
+
 section('isAudioContentType predicate');
 const { isAudioContentType } = await import('../../src/shared/content-type.mjs');
 // Positive cases.

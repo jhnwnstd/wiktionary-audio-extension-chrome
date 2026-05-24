@@ -6,6 +6,7 @@
 
 import { t } from '../shared/i18n.mjs';
 import { batchFolderName } from '../shared/paths.mjs';
+import { createModeCache } from '../shared/mode-cache.mjs';
 import { isExtensionContextValid, safeSendMessage, showContextInvalidatedMessage } from './context.mjs';
 
 /** @typedef {import('./discovery.mjs').AudioItem} AudioItem */
@@ -67,54 +68,25 @@ function showFeedback(button, message, kind = 'success') {
 
 // Mode is read on every download click; without local caching that's an
 // async chrome.storage.sync round-trip on the hot path (~5ms in practice
-// but more importantly an awaited boundary). We read once on first use
-// and invalidate via storage.onChanged so the popup's "Save" still takes
-// effect immediately on this tab.
-/** @type {'original' | 'convert' | 'both' | null} */
-let cachedMode = null;
-/** @type {Promise<'original' | 'convert' | 'both'> | null} */
-let cachedModePromise = null;
-
-try {
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'sync') return;
-    if (changes.mode) {
-      cachedMode = null;
-      cachedModePromise = null;
-    }
-  });
-} catch { /* extension context not yet ready; first getMode() will populate */ }
+// but more importantly an awaited boundary). The factory in
+// shared/mode-cache.mjs owns the cache state (testable in isolation);
+// here we inject chrome.* as the storage dep. The try/catch around the
+// onChanged listener handles the case where the extension context isn't
+// fully ready yet (the first getMode() call will then populate normally).
+const _getMode = createModeCache({
+  get: (defaults) => chrome.storage.sync.get(defaults),
+  onChanged: (cb) => {
+    try { chrome.storage.onChanged.addListener(cb); }
+    catch { /* extension context not yet ready */ }
+  },
+});
 
 async function getMode() {
   if (!isExtensionContextValid()) {
     showContextInvalidatedMessage();
     return null;
   }
-  if (cachedMode) return cachedMode;
-  if (cachedModePromise) return cachedModePromise;
-  cachedModePromise = (async () => {
-    // chrome.storage.sync.get can reject on transport errors (sync disabled,
-    // profile transition, quota). The missing-value path defaults to
-    // 'original'; on transport rejection we ALSO default to 'original' for
-    // this click so the download stays usable, but we do NOT populate
-    // cachedMode in that case. Otherwise one transient failure would pin
-    // the user to Original for the entire page session even after the
-    // user's real preference came back online.
-    try {
-      const got = await chrome.storage.sync.get({ mode: 'original' });
-      const raw = got && typeof got.mode === 'string' ? got.mode : 'original';
-      const m = raw === 'convert' || raw === 'both' ? raw : 'original';
-      cachedMode = m;
-      return m;
-    } catch {
-      return 'original';
-    }
-  })();
-  try {
-    return await cachedModePromise;
-  } finally {
-    cachedModePromise = null;
-  }
+  return _getMode();
 }
 
 // Map UI mode to one or more concrete send-download modes. Mode 'both' fans
