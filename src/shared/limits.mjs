@@ -18,9 +18,5 @@ export const TRANSCODED_CACHE_MAX_BYTES = 20 * 1024 * 1024;
 // Prefetch worker pool size. 3 stays well under Chrome's per-host limit.
 export const PREFETCH_CONCURRENCY = 3;
 
-// Original-mode cached-file threshold for the data URL fast path. Larger
-// files pass the source URL to chrome.downloads (browser HTTP cache hit).
-export const DATA_URL_THRESHOLD_BYTES = 512 * 1024;
-
 // dismissedUrls Set cap. Several pages worth of pronunciation audio.
 export const DISMISSED_URLS_MAX = 512;

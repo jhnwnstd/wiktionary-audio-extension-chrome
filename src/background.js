@@ -6,7 +6,6 @@ import {
   PER_FILE_MAX_BYTES,
   PREFETCH_CACHE_MAX_BYTES,
   PREFETCH_CONCURRENCY,
-  DATA_URL_THRESHOLD_BYTES,
   TRANSCODED_CACHE_MAX_BYTES,
   DISMISSED_URLS_MAX,
 } from './shared/limits.mjs';
@@ -165,8 +164,10 @@ function revokeBlobInOffscreen(blobUrl) {
 /** @type {ByteBoundedCache<ArrayBuffer>} */
 const audioCache = new ByteBoundedCache(PREFETCH_CACHE_MAX_BYTES);
 
-// PANEL_DISMISSED uses these to abort in-progress fetches.
-/** @type {Map<string, AbortController>} */
+// PANEL_DISMISSED uses .controller to abort in-progress fetches. The .done
+// Promise lets DOWNLOAD_AUDIO await an in-flight prefetch instead of issuing
+// its own redundant fetch when the user clicks before prefetch settles.
+/** @type {Map<string, { controller: AbortController, done: Promise<void> }>} */
 const inflightPrefetches = new Map();
 
 // Speculatively transcoded WAVs, keyed by source URL. `transcodeInflight`
@@ -291,6 +292,71 @@ function addToCache(url, bytes) {
   audioCache.set(url, bytes, bytes.byteLength);
 }
 
+// One validated fetch: status, post-redirect allowlist, Content-Type,
+// Content-Length, and post-read byte length all checked before the bytes
+// are returned. Returns null on any rejection (caller decides how to
+// react). Shared between the prefetch worker pool and the click-path
+// fallback in ensureValidatedBytes.
+/**
+ * @param {string} url
+ * @param {AbortController} controller
+ * @returns {Promise<ArrayBuffer | null>}
+ */
+async function fetchValidatedAudio(url, controller) {
+  // redirect:'follow' is required (Wikimedia CDN routing); the post-fetch
+  // allowlist re-check is what makes that safe.
+  const r = await fetch(url, { credentials: 'omit', signal: controller.signal });
+  if (!r.ok) return null;
+  if (!isAllowedAudioUrl(r.url)) return null;
+  if (!isAudioContentType(r.headers.get('Content-Type'))) return null;
+  // Number.isFinite filters NaN/Infinity from a malformed header.
+  const declared = parseInt(r.headers.get('Content-Length') || '0', 10);
+  if (Number.isFinite(declared) && declared > PER_FILE_MAX_BYTES) {
+    controller.abort();
+    return null;
+  }
+  const bytes = await r.arrayBuffer();
+  if (bytes.byteLength === 0 || bytes.byteLength > PER_FILE_MAX_BYTES) return null;
+  return bytes;
+}
+
+// Cache hit, await in-flight prefetch, or do our own validated fetch.
+// Used by the Original-mode click path so chrome.downloads only ever
+// writes pre-validated bytes (via data URL); chrome.downloads never
+// issues its own network fetch for audio. Returns null on any failure.
+/**
+ * @param {string} url
+ * @returns {Promise<ArrayBuffer | null>}
+ */
+async function ensureValidatedBytes(url) {
+  let cached = peekCached(url);
+  if (cached) return cached;
+  const inflight = inflightPrefetches.get(url);
+  if (inflight) {
+    await inflight.done;
+    cached = peekCached(url);
+    if (cached) return cached;
+  }
+  // No cache and nothing in flight; fetch it ourselves. Register an
+  // inflight entry so a concurrent second click on the same URL shares
+  // this fetch via the await branch above.
+  const controller = new AbortController();
+  /** @type {(value?: void) => void} */
+  let resolveDone = () => {};
+  const done = new Promise(r => { resolveDone = r; });
+  inflightPrefetches.set(url, { controller, done });
+  try {
+    const bytes = await fetchValidatedAudio(url, controller);
+    if (bytes) addToCache(url, bytes);
+    return bytes;
+  } catch {
+    return null;
+  } finally {
+    inflightPrefetches.delete(url);
+    resolveDone();
+  }
+}
+
 // Fetch a batch with bounded concurrency, stash bytes in audioCache, and
 // fire a speculative top-item transcode if mode is Convert/Both. Best-
 // effort throughout; per-URL failures are swallowed.
@@ -331,30 +397,17 @@ async function prefetchAudio(items) {
         const url = todo[cursor++];
         if (!url) continue;
         const controller = new AbortController();
-        inflightPrefetches.set(url, controller);
+        /** @type {(value?: void) => void} */
+        let resolveDone = () => {};
+        const done = new Promise(r => { resolveDone = r; });
+        inflightPrefetches.set(url, { controller, done });
         try {
-          // redirect:'follow' is required (Wikimedia CDN routing); the
-          // post-fetch allowlist re-check is what makes that safe.
-          const r = await fetch(url, {
-            credentials: 'omit',
-            signal: controller.signal,
-          });
-          if (!r.ok) continue;
-          if (!isAllowedAudioUrl(r.url)) continue;
-          if (!isAudioContentType(r.headers.get('Content-Type'))) continue;
-          // Number.isFinite filters NaN/Infinity from a malformed header;
-          // the post-read length check catches anything that slips past.
-          const declared = parseInt(r.headers.get('Content-Length') || '0', 10);
-          if (Number.isFinite(declared) && declared > PER_FILE_MAX_BYTES) {
-            controller.abort();
-            continue;
-          }
-          const bytes = await r.arrayBuffer();
-          if (bytes.byteLength === 0 || bytes.byteLength > PER_FILE_MAX_BYTES) continue;
-          addToCache(url, bytes);
+          const bytes = await fetchValidatedAudio(url, controller);
+          if (bytes) addToCache(url, bytes);
         } catch { /* per-URL best effort; one failure doesn't block others */ }
         finally {
           inflightPrefetches.delete(url);
+          resolveDone();
         }
       }
     });
@@ -379,8 +432,8 @@ function dismissUrls(urls) {
   for (const url of urls) {
     if (typeof url !== 'string') continue;
     dismissUrl(url);
-    const ctrl = inflightPrefetches.get(url);
-    if (ctrl) ctrl.abort();
+    const inflight = inflightPrefetches.get(url);
+    if (inflight) inflight.controller.abort();
     audioCache.delete(url);
     transcodedCache.delete(url);
   }
@@ -514,30 +567,21 @@ chrome.runtime.onMessage.addListener(
         saveAs: false,
       };
     } else {
-      const cached = peekCached(url);
-      if (cached && cached.byteLength <= DATA_URL_THRESHOLD_BYTES) {
-        // Small + cached: data URL skips the network round trip. Saved
-        // file's extension comes from `filename`, not the data URL MIME.
-        log('[Background] Downloading original (cached, data URL):', originalFilename, folder ? `-> ${folder}/` : '');
-        opts = {
-          url: `data:application/octet-stream;base64,${arrayBufferToBase64(cached)}`,
-          filename: pathWithFolder(folder, originalFilename),
-          saveAs: false,
-        };
-      } else {
-        // Uncached or large: chrome.downloads fetches the URL itself
-        // (browser HTTP cache hit from earlier prefetch when possible).
-        // No sink-side HEAD revalidation: the URL allowlist already
-        // constrains the blast radius to upload.wikimedia.org, and the
-        // ~1s HEAD latency on the click->ack path wasn't worth the
-        // hypothetical Wikimedia-bug defense it provided.
-        log('[Background] Downloading original:', originalFilename, folder ? `-> ${folder}/` : '');
-        opts = {
-          url,
-          filename: pathWithFolder(folder, originalFilename),
-          saveAs: false,
-        };
-      }
+      // Route every Original download through audioCache so chrome.downloads
+      // only ever writes pre-validated bytes (URL allowlist + Content-Type
+      // + size cap, all enforced inside ensureValidatedBytes). chrome.
+      // downloads itself never issues a network fetch for audio under
+      // this design; the SW does the only fetch, and the data URL is
+      // just the handoff. Saved file's extension comes from `filename`,
+      // not the data URL MIME.
+      const bytes = await ensureValidatedBytes(url);
+      if (!bytes) throw new Error('audio fetch failed');
+      log('[Background] Downloading original (data URL):', originalFilename, folder ? `-> ${folder}/` : '');
+      opts = {
+        url: `data:application/octet-stream;base64,${arrayBufferToBase64(bytes)}`,
+        filename: pathWithFolder(folder, originalFilename),
+        saveAs: false,
+      };
     }
 
     // chrome.downloads.download resolves once the download is INITIATED

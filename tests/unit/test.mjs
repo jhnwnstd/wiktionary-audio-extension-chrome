@@ -49,9 +49,8 @@ function extractTitle(pathname) {
 }
 function detectLang(hostname) { return pickLocale(hostname); }
 
-// arrayBufferToBase64 is private to background.js (chunked btoa, used only
-// for sub-DATA_URL_THRESHOLD_BYTES bytes). Mirrored here as a test helper
-// because it's tiny and isn't worth exposing as a module export.
+// arrayBufferToBase64 is private to background.js (chunked btoa for the
+// Original-mode data URL handoff). Mirrored as a test helper.
 function arrayBufferToBase64(arrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
   let bin = '';
