@@ -6,7 +6,7 @@
 
 import { t } from '../shared/i18n.mjs';
 import { batchFolderName } from '../shared/paths.mjs';
-import { isExtensionContextValid, safeSendMessage } from './context.mjs';
+import { isExtensionContextValid, safeSendMessage, showContextInvalidatedMessage } from './context.mjs';
 
 /** @typedef {import('./discovery.mjs').AudioItem} AudioItem */
 
@@ -86,7 +86,10 @@ try {
 } catch { /* extension context not yet ready; first getMode() will populate */ }
 
 async function getMode() {
-  if (!isExtensionContextValid()) return null;
+  if (!isExtensionContextValid()) {
+    showContextInvalidatedMessage();
+    return null;
+  }
   if (cachedMode) return cachedMode;
   if (cachedModePromise) return cachedModePromise;
   cachedModePromise = (async () => {
