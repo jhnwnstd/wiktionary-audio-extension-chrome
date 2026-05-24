@@ -521,6 +521,19 @@ async function prefetchAudio(items) {
     if (i && typeof i.url === 'string') dismissedUrls.delete(i.url);
   }
 
+  // Kick off FFmpeg pre-warm in parallel with prefetch when Convert/Both
+  // mode is active. The previous design only pre-warmed on POPUP_OPENED;
+  // this catches the much commoner case where the user has Convert set as
+  // their default and never opens the popup. The ~350-650ms wasm load now
+  // runs concurrently with the network fetches instead of being charged to
+  // the eventual click. Opportunistic: failures fall back to the cold path
+  // exactly as before.
+  chrome.storage.sync.get({ mode: 'original' }).then(({ mode }) => {
+    if (mode === 'convert' || mode === 'both') {
+      prewarmFFmpeg().catch(() => { /* opportunistic */ });
+    }
+  }).catch(() => { /* opportunistic */ });
+
   // Skip URLs already cached OR already in flight, AND drop anything
   // outside the Wikimedia allowlist. The inflight check prevents repeated
   // PREFETCH_AUDIO messages from spawning duplicate fetches and overwriting

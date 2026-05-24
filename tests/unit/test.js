@@ -40,33 +40,69 @@ function isAudioInfo(info) {
   return false;
 }
 
+function validImageInfo(info) {
+  if (!info || typeof info !== 'object') return false;
+  if (typeof info.url !== 'string' || info.url.length === 0) return false;
+  if (info.mime !== undefined && info.mime !== null && typeof info.mime !== 'string') return false;
+  if (info.mediatype !== undefined && info.mediatype !== null && typeof info.mediatype !== 'string') return false;
+  if (info.size !== undefined && info.size !== null) {
+    if (typeof info.size !== 'number' || !Number.isFinite(info.size) || info.size < 0) return false;
+  }
+  return true;
+}
+
+function urlTail(url) {
+  try {
+    const p = new URL(url).pathname;
+    const i = p.lastIndexOf('/');
+    const tail = i >= 0 ? p.slice(i + 1) : p;
+    return tail || 'audio';
+  } catch { return 'audio'; }
+}
+
 function audioItemsFromPages(pages) {
   if (!Array.isArray(pages)) return [];
   const results = [];
   for (const page of pages) {
     const info = page?.imageinfo?.[0];
-    if (info?.url && isAudioInfo(info)) {
-      const cleanTail = (info.url.split('/').pop() || 'audio').split('?')[0].split('#')[0];
-      results.push({
-        title: page.title,
-        url: info.url,
-        filename: decodeURIComponent(cleanTail),
-      });
-    }
+    if (!validImageInfo(info)) continue;
+    if (!isAudioInfo(info)) continue;
+    results.push({
+      title: page.title,
+      url: info.url,
+      filename: decodeURIComponent(urlTail(info.url)),
+    });
   }
   return results;
+}
+
+// Mirrored continuation handling from src/content-script.js. Keep in sync.
+const CONTINUE_KEYS = new Set(['continue', 'gimcontinue']);
+function isPlainContinue(c) {
+  if (c === null || typeof c !== 'object') return false;
+  if (Array.isArray(c)) return false;
+  const proto = Object.getPrototypeOf(c);
+  return proto === Object.prototype || proto === null;
+}
+function applyContinuation(params, cont) {
+  for (const k of CONTINUE_KEYS) {
+    const v = cont[k];
+    if (typeof v === 'string') params.set(k, v);
+  }
 }
 
 // Mirrored from src/background.js sanitizeFilename. Keep in sync.
 const WINDOWS_RESERVED_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
 const FORBIDDEN_CHARS_RE = /[<>:"/\\|?*\x00-\x1f]/g;
 const UTF8_ENCODER = new TextEncoder();
+const UTF8_DECODER = new TextDecoder();
 const utf8ByteLength = (s) => UTF8_ENCODER.encode(s).length;
 function truncateToBytes(s, maxBytes) {
-  if (utf8ByteLength(s) <= maxBytes) return s;
-  let result = s;
-  while (result.length > 0 && utf8ByteLength(result) > maxBytes) result = result.slice(0, -1);
-  return result;
+  const bytes = UTF8_ENCODER.encode(s);
+  if (bytes.length <= maxBytes) return s;
+  let cut = maxBytes;
+  while (cut > 0 && (bytes[cut] & 0xc0) === 0x80) cut--;
+  return UTF8_DECODER.decode(bytes.subarray(0, cut));
 }
 function sanitizeFilename(filename) {
   if (typeof filename !== 'string' || !filename) return 'audio';
@@ -727,6 +763,94 @@ for (const [code, keys] of Object.entries(locales)) {
     keys.join(',') === enKeys,
     `i18n.${code} has same keys as en (got ${keys.length}, expected ${locales.en.length})`
   );
+}
+
+section('MediaWiki imageinfo schema validator');
+// Positive: realistic shapes accepted.
+assert(validImageInfo({ url: 'https://upload.wikimedia.org/x.ogg' }), 'minimum: url only');
+assert(validImageInfo({ url: 'https://x/y.ogg', mime: 'audio/ogg', mediatype: 'AUDIO', size: 1234 }), 'full shape');
+assert(validImageInfo({ url: 'https://x/y.ogg', mime: null, mediatype: null, size: null }), 'nulls in optionals');
+assert(validImageInfo({ url: 'https://x/y.ogg', size: 0 }), 'zero size accepted');
+// Negative: anything that would let bad data through.
+assert(!validImageInfo(null), 'null rejected');
+assert(!validImageInfo(undefined), 'undefined rejected');
+assert(!validImageInfo('string'), 'string rejected');
+assert(!validImageInfo({}), 'no url rejected');
+assert(!validImageInfo({ url: '' }), 'empty url rejected');
+assert(!validImageInfo({ url: 123 }), 'non-string url rejected');
+assert(!validImageInfo({ url: 'https://x/y.ogg', mime: 123 }), 'non-string mime rejected');
+assert(!validImageInfo({ url: 'https://x/y.ogg', mediatype: [] }), 'array mediatype rejected');
+assert(!validImageInfo({ url: 'https://x/y.ogg', size: 'big' }), 'string size rejected');
+assert(!validImageInfo({ url: 'https://x/y.ogg', size: Infinity }), 'Infinity size rejected');
+assert(!validImageInfo({ url: 'https://x/y.ogg', size: NaN }), 'NaN size rejected');
+assert(!validImageInfo({ url: 'https://x/y.ogg', size: -1 }), 'negative size rejected');
+// audioItemsFromPages now refuses malformed entries instead of silently coercing.
+assert(
+  audioItemsFromPages([{ title: 'F:x.ogg', imageinfo: [{ url: 'https://x/y.ogg', mediatype: 'AUDIO', size: NaN }] }]).length === 0,
+  'item with NaN size dropped'
+);
+assert(
+  audioItemsFromPages([{ title: 'F:x.ogg', imageinfo: [{ url: 'https://x/y.ogg', mediatype: 'AUDIO', mime: 42 }] }]).length === 0,
+  'item with non-string mime dropped'
+);
+
+section('URL tail extraction');
+assert(urlTail('https://upload.wikimedia.org/a/b/file.ogg') === 'file.ogg', 'basic path');
+assert(urlTail('https://upload.wikimedia.org/a/b/file.ogg?utm_source=x') === 'file.ogg', 'query stripped');
+assert(urlTail('https://upload.wikimedia.org/a/b/file.ogg#frag') === 'file.ogg', 'fragment stripped');
+assert(urlTail('https://upload.wikimedia.org/a/b/file.ogg?u=1#f') === 'file.ogg', 'query + fragment stripped');
+assert(urlTail('https://upload.wikimedia.org/') === 'audio', 'empty tail -> audio fallback');
+assert(urlTail('https://upload.wikimedia.org/LL-Q1860_%28eng%29-water.wav') === 'LL-Q1860_%28eng%29-water.wav', 'pathname stays percent-encoded');
+assert(urlTail('not a url') === 'audio', 'malformed -> audio fallback');
+
+section('Continuation handling');
+assert(isPlainContinue({}), 'empty object is plain');
+assert(isPlainContinue({ gimcontinue: '1' }), 'object literal is plain');
+assert(isPlainContinue(Object.create(null)), 'null-proto object is plain');
+assert(!isPlainContinue(null), 'null not plain');
+assert(!isPlainContinue('string'), 'string not plain');
+assert(!isPlainContinue([]), 'array not plain');
+assert(!isPlainContinue(123), 'number not plain');
+const cp1 = new URLSearchParams();
+applyContinuation(cp1, { gimcontinue: 'abc|123', continue: 'gim||' });
+assert(cp1.get('gimcontinue') === 'abc|123', 'allowlisted key copied');
+assert(cp1.get('continue') === 'gim||', 'continue indicator copied');
+const cp2 = new URLSearchParams();
+applyContinuation(cp2, { evil: 'x', __proto__: 'y', gimcontinue: 'ok' });
+assert(cp2.get('evil') === null, 'non-allowlisted key dropped');
+assert(cp2.get('__proto__') === null, 'prototype-poisoning key dropped');
+assert(cp2.get('gimcontinue') === 'ok', 'allowlisted still copied');
+const cp3 = new URLSearchParams();
+applyContinuation(cp3, { gimcontinue: 42, continue: null });
+assert(cp3.get('gimcontinue') === null, 'non-string value dropped');
+assert(cp3.get('continue') === null, 'null value dropped');
+
+section('truncateToBytes: UTF-8 boundary correctness');
+// Output must always decode to valid UTF-8 (no split multi-byte sequences).
+function isValidUtf8Bytes(s) {
+  const bytes = UTF8_ENCODER.encode(s);
+  try { UTF8_DECODER.decode(bytes); return true; } catch { return false; }
+}
+assert(truncateToBytes('hello', 100) === 'hello', 'no-op when under cap');
+assert(truncateToBytes('hello', 5) === 'hello', 'exact fit');
+assert(truncateToBytes('hello', 3) === 'hel', 'ASCII truncation');
+assert(truncateToBytes('', 10) === '', 'empty input');
+// é is 2 bytes (C3 A9); cutting at 1 must round down to 0.
+assert(truncateToBytes('é', 1) === '', 'partial 2-byte sequence rounded down');
+assert(truncateToBytes('é', 2) === 'é', 'full 2-byte sequence kept');
+// 水 is 3 bytes (E6 B0 B4); cutting at 1 or 2 must round down.
+assert(truncateToBytes('水', 1) === '', 'partial 3-byte at 1 rounded down');
+assert(truncateToBytes('水', 2) === '', 'partial 3-byte at 2 rounded down');
+assert(truncateToBytes('水', 3) === '水', 'full 3-byte sequence kept');
+// Emoji 🎵 is 4 bytes (F0 9F 8E B5).
+assert(truncateToBytes('🎵', 3) === '', 'partial 4-byte rounded down');
+assert(truncateToBytes('🎵', 4) === '🎵', 'full 4-byte sequence kept');
+// Mixed string: must always produce valid UTF-8.
+const mixed = 'abc水def🎵ghi';
+for (let maxBytes = 0; maxBytes <= utf8ByteLength(mixed) + 5; maxBytes++) {
+  const out = truncateToBytes(mixed, maxBytes);
+  assert(utf8ByteLength(out) <= maxBytes, `truncated to <= ${maxBytes} bytes`);
+  assert(isValidUtf8Bytes(out), `valid UTF-8 at maxBytes=${maxBytes}`);
 }
 
 // ============ SUMMARY ============

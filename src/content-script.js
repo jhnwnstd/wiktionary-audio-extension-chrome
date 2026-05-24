@@ -584,9 +584,46 @@ function isAudioInfo(info) {
 }
 
 /**
+ * Single explicit acceptance check for the MediaWiki imageinfo shape we
+ * depend on. Replaces the prior pattern of field-by-field optional-chain
+ * access (which was "valid by lucky absence of throw" rather than "valid
+ * by inspection"). Returns true only when every consumed field has a
+ * type we can act on; falsy/absent optional fields are tolerated.
+ *
+ * @param {any} info
+ */
+function validImageInfo(info) {
+  if (!info || typeof info !== 'object') return false;
+  if (typeof info.url !== 'string' || info.url.length === 0) return false;
+  if (info.mime !== undefined && info.mime !== null && typeof info.mime !== 'string') return false;
+  if (info.mediatype !== undefined && info.mediatype !== null && typeof info.mediatype !== 'string') return false;
+  if (info.size !== undefined && info.size !== null) {
+    if (typeof info.size !== 'number' || !Number.isFinite(info.size) || info.size < 0) return false;
+  }
+  return true;
+}
+
+/**
+ * Extract the filename tail from a URL via a single URL parse + one split,
+ * dropping query/fragment automatically (URL.pathname has neither). Falls
+ * back to 'audio' if pathname has no tail. One allocation instead of the
+ * three-or-four-string split chain.
+ *
+ * @param {string} url
+ */
+function urlTail(url) {
+  try {
+    const p = new URL(url).pathname;
+    const i = p.lastIndexOf('/');
+    const tail = i >= 0 ? p.slice(i + 1) : p;
+    return tail || 'audio';
+  } catch { return 'audio'; }
+}
+
+/**
  * Filter an Action API `pages` array down to audio entries with the fields
- * we care about. Strips any URL query/fragment defensively. Typed as `any[]`
- * because MediaWiki responses don't have a stable TypeScript shape.
+ * we care about. The shape validator runs at the boundary so downstream
+ * code operates on a known-shape AudioItem.
  *
  * Every result is built with the full AudioItem field set (downloadName,
  * displayName, lang as their empty/null defaults) so the V8 hidden class
@@ -601,29 +638,23 @@ function audioItemsFromPages(pages) {
   const results = [];
   for (const page of pages) {
     const info = page?.imageinfo?.[0];
-    // Reject URLs outside the Wikimedia upload host. Defense in depth: if
-    // the MediaWiki API ever returns something unexpected, we drop it here
-    // and it never reaches the panel, prefetch, downloads, or FFmpeg.
-    if (info?.url && isAudioInfo(info) && isAllowedAudioUrl(info.url)) {
-      // Strip any URL query/fragment before extracting the filename so
-      // tracking junk (e.g. ?utm_source=... that Wikimedia attaches to some
-      // imageinfo URLs) doesn't leak into display or download names.
-      // Drop oversized files reported by the API before they ever reach
-      // prefetch. Wikimedia's imageinfo size is authoritative; we only
-      // pay the network round trip for files within budget.
-      if (typeof info.size === 'number' && info.size > PER_FILE_MAX_BYTES) continue;
-      const cleanTail = (info.url.split('/').pop() || 'audio').split('?')[0].split('#')[0];
-      results.push({
-        title: page.title,
-        url: info.url,
-        filename: safeDecodeURIComponent(cleanTail),
-        mime: info.mime ?? null,
-        size: typeof info.size === 'number' ? info.size : null,
-        downloadName: '',
-        displayName: '',
-        lang: null,
-      });
-    }
+    if (!validImageInfo(info)) continue;
+    if (!isAudioInfo(info)) continue;
+    if (!isAllowedAudioUrl(info.url)) continue;
+    // Drop oversized files reported by the API before they ever reach
+    // prefetch. Wikimedia's imageinfo size is authoritative; we only pay
+    // the network round trip for files within budget.
+    if (typeof info.size === 'number' && info.size > PER_FILE_MAX_BYTES) continue;
+    results.push({
+      title: page.title,
+      url: info.url,
+      filename: safeDecodeURIComponent(urlTail(info.url)),
+      mime: info.mime ?? null,
+      size: typeof info.size === 'number' ? info.size : null,
+      downloadName: '',
+      displayName: '',
+      lang: null,
+    });
   }
   return results;
 }
@@ -682,9 +713,7 @@ async function discoverAudio(title) {
   // Hard cap on continuation passes to avoid pathological loops.
   for (let pass = 0; pass < 5; pass++) {
     const params = new URLSearchParams(baseParams);
-    if (cont) {
-      for (const [k, v] of Object.entries(cont)) params.set(k, v);
-    }
+    if (cont) applyContinuation(params, cont);
     const data = await fetchJson(`${apiEndpoint}?${params}`);
     if (!data) break;
 
@@ -698,10 +727,45 @@ async function discoverAudio(title) {
       results.push(item);
     }
 
-    if (data.continue) cont = data.continue;
-    else break;
+    cont = isPlainContinue(data.continue) ? data.continue : null;
+    if (!cont) break;
   }
   return results;
+}
+
+// Only the continuation keys our specific query (generator=images +
+// prop=imageinfo) can legitimately produce. The MediaWiki Action API uses
+// `continue` as an indicator string plus per-module keys; for us the only
+// module emitting a continuation is the `images` generator (`gimcontinue`).
+// Anything else returned by the API is silently dropped instead of being
+// spread into URLSearchParams.
+const CONTINUE_KEYS = new Set(['continue', 'gimcontinue']);
+
+/**
+ * True iff `c` is a non-null plain object (not an array, not a primitive,
+ * no exotic prototype). Defensive against an API response that returns
+ * `continue` as a string, array, or null.
+ * @param {unknown} c
+ */
+function isPlainContinue(c) {
+  if (c === null || typeof c !== 'object') return false;
+  if (Array.isArray(c)) return false;
+  const proto = Object.getPrototypeOf(c);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Copy allowed continuation parameters from `cont` into `params`. Keys not
+ * in the allowlist are ignored; values must be strings (MediaWiki always
+ * returns string continuation tokens).
+ * @param {URLSearchParams} params
+ * @param {Record<string, unknown>} cont
+ */
+function applyContinuation(params, cont) {
+  for (const k of CONTINUE_KEYS) {
+    const v = cont[k];
+    if (typeof v === 'string') params.set(k, v);
+  }
 }
 
 // ============== DOWNLOAD LOGIC ==============
@@ -767,13 +831,44 @@ function showFeedback(button, message, kind = 'success') {
   }, FEEDBACK_RESET_MS);
 }
 
+// Mode is read on every download click; without local caching that's an
+// async chrome.storage.sync round-trip on the hot path (~5ms in practice
+// but more importantly an awaited boundary). We read once on first use
+// and invalidate via storage.onChanged so the popup's "Save" still takes
+// effect immediately on this tab.
+/** @type {'original' | 'convert' | 'both' | null} */
+let cachedMode = null;
+/** @type {Promise<'original' | 'convert' | 'both'> | null} */
+let cachedModePromise = null;
+
+try {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'sync') return;
+    if (changes.mode) {
+      cachedMode = null;
+      cachedModePromise = null;
+    }
+  });
+} catch { /* extension context not yet ready; first getMode() will populate */ }
+
 async function getMode() {
   if (!isExtensionContextValid()) {
     showContextInvalidatedMessage();
     return null;
   }
-  const { mode = 'original' } = await chrome.storage.sync.get({ mode: 'original' });
-  return mode;
+  if (cachedMode) return cachedMode;
+  if (cachedModePromise) return cachedModePromise;
+  cachedModePromise = (async () => {
+    const { mode = 'original' } = await chrome.storage.sync.get({ mode: 'original' });
+    const m = mode === 'convert' || mode === 'both' ? mode : 'original';
+    cachedMode = m;
+    return m;
+  })();
+  try {
+    return await cachedModePromise;
+  } finally {
+    cachedModePromise = null;
+  }
 }
 
 // Map UI mode to one or more concrete send-download modes. Mode 'both' fans

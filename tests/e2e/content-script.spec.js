@@ -404,6 +404,93 @@ test.describe('content script audio discovery', () => {
     });
   }
 
+  // Closure-binding regression. The shadow root is open (so Playwright +
+  // tooling can pierce it), which also means a hostile page script could in
+  // principle reach into the panel via host.shadowRoot. The defence is NOT
+  // shadow opacity; it is that each button's click handler captures its own
+  // AudioItem in a closure. No DOM attribute the page can rewrite (testid,
+  // data-i, textContent, any data-* we ever add later) can retarget a real
+  // user click to a different item.
+  test('shadow-DOM click handler resists page DOM tampering', async () => {
+    const URL_A = 'https://upload.wikimedia.org/x/En-us-water.ogg';
+    const URL_B = 'https://upload.wikimedia.org/x/En-uk-water.ogg';
+    const FAKE_OGG = Buffer.from([
+      0x4f, 0x67, 0x67, 0x53, 0x00, 0x02, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]);
+    await context.route(URL_A, (route) => route.fulfill({ status: 200, contentType: 'audio/ogg', body: FAKE_OGG }));
+    await context.route(URL_B, (route) => route.fulfill({ status: 200, contentType: 'audio/ogg', body: FAKE_OGG }));
+    await context.route('**/w/api.php**', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(actionApiResponse([
+          { title: 'File:En-us-water.ogg', url: URL_A },
+          { title: 'File:En-uk-water.ogg', url: URL_B },
+        ])),
+      })
+    );
+
+    // Monkey-patch chrome.downloads.download in the SW to capture the opts
+    // it's called with. We then assert on the captured filename: data: URL
+    // downloads from the cached-bytes path don't always fire Playwright's
+    // download event, but the SW call is deterministic.
+    let [sw] = context.serviceWorkers();
+    if (!sw) sw = await context.waitForEvent('serviceworker');
+    await sw.evaluate(() => {
+      globalThis.__capturedDownloads = [];
+      const orig = chrome.downloads.download;
+      chrome.downloads.download = function(opts, cb) {
+        globalThis.__capturedDownloads.push({ filename: opts.filename, url: opts.url });
+        return orig.call(this, opts, cb);
+      };
+    });
+
+    const page = await context.newPage();
+    await page.goto(WATER_URL);
+    await expect(page.getByTestId('wad-panel')).toBeVisible();
+    await expect(page.getByTestId('wad-audio-item')).toHaveCount(2);
+
+    // Simulate a hostile page script reaching into the (open) shadow root
+    // and rewriting everything it can on the FIRST download button to make
+    // it impersonate the second. If the handler resolved its target item
+    // from any DOM attribute or text, the click would download item B.
+    await page.evaluate(() => {
+      let host = null;
+      for (const el of document.documentElement.querySelectorAll('div')) {
+        if (el.shadowRoot && el.shadowRoot.querySelector('[data-testid="wad-panel"]')) {
+          host = el;
+          break;
+        }
+      }
+      if (!host || !host.shadowRoot) throw new Error('panel host not found');
+      const buttons = host.shadowRoot.querySelectorAll('[data-testid="wad-download"]');
+      if (buttons.length !== 2) throw new Error(`expected 2 download buttons, got ${buttons.length}`);
+      // Rewrite anything a page might exploit.
+      buttons[0].setAttribute('data-i', '1');
+      buttons[0].setAttribute('data-preview', '1');
+      buttons[0].setAttribute('data-target-item', '1');
+      buttons[0].textContent = '(impersonating B)';
+    });
+
+    // Click the first row's last button (we just clobbered its testid, so a
+    // testid query would be wrong). A real Playwright click is isTrusted.
+    const firstRow = page.getByTestId('wad-audio-item').nth(0);
+    const dlBtn = firstRow.locator('button').last();
+    await dlBtn.click();
+    // Confirm the click reached our handler at all: the button text flips.
+    await expect(dlBtn).toContainText(/Downloaded/, { timeout: 15_000 });
+
+    // Read what the SW actually passed to chrome.downloads.download.
+    const captured = await sw.evaluate(() => globalThis.__capturedDownloads);
+    expect(captured.length).toBeGreaterThanOrEqual(1);
+    // The closure-captured item is A (En-us → "american" in the friendly
+    // name). If tampering had succeeded, the filename would say "british".
+    const filename = String(captured[captured.length - 1].filename).toLowerCase();
+    expect(filename).toContain('american');
+    expect(filename).not.toContain('british');
+  });
+
   test('renders nothing when no audio is discovered', async () => {
     await context.route('**/w/api.php**', (route) =>
       route.fulfill({
