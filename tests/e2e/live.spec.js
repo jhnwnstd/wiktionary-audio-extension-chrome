@@ -235,6 +235,42 @@ test.describe('download paths', { tag: '@live' }, () => {
     downloadMetrics.push({ label: 'Convert: click->preparing', ms: preparingMs });
     downloadMetrics.push({ label: 'Convert: click->ack (cold full path)', ms: ackMs });
   });
+
+  // Regression: in Convert/Both mode, background should speculatively
+  // transcode the top item once prefetch settles. Verifies the wiring via
+  // the introspection hook; the user-facing Convert click test above
+  // covers the consumption path.
+  test('Convert mode triggers speculative transcode of top item', async () => {
+    const extensionId = await getExtensionId(context);
+    const popup = await context.newPage();
+    await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+    await popup.getByTestId('wad-mode-convert').check();
+    await expect
+      .poll(async () => popup.evaluate(async () => (await chrome.storage.sync.get('mode')).mode))
+      .toBe('convert');
+    await popup.close();
+
+    const page = await context.newPage();
+    await page.goto('https://en.wiktionary.org/wiki/water', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30_000,
+    });
+    await page.getByTestId('wad-panel').waitFor({ state: 'visible', timeout: 15_000 });
+
+    let [sw] = context.serviceWorkers();
+    if (!sw) sw = await context.waitForEvent('serviceworker');
+
+    // Poll until the speculative path has either produced a cached WAV
+    // (transcodedCount > 0) or is in flight (transcodeInflight > 0).
+    // Either state proves the wiring fired; consuming the WAV is verified
+    // by the Convert download test above.
+    await expect
+      .poll(async () => sw.evaluate(() => {
+        const s = globalThis._wadInspectAudioCache();
+        return s.transcodedCount + s.transcodeInflight.length;
+      }), { timeout: 60_000 })
+      .toBeGreaterThan(0);
+  });
 });
 
 // Viewport sweep against a real Wiktionary page. Per viewport size:

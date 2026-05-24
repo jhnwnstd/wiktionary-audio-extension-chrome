@@ -2,18 +2,20 @@
 // content-script.js: Wiktionary audio discovery, UI panel, download actions.
 
 /**
- * One pronunciation audio entry surfaced by Action API discovery. The two
- * `*Name` fields are computed from `filename` after parsing and are what
- * the panel and download path actually use.
+ * One pronunciation audio entry surfaced by Action API discovery. Every
+ * field is always present (no optionals) so the V8 hidden class stays
+ * stable across the lifecycle: audioItemsFromPages builds the full shape,
+ * main() fills the computed fields, the panel reads them.
+ *
  * @typedef {object} AudioItem
  * @property {string} title  MediaWiki File: title
  * @property {string} url  direct upload.wikimedia.org URL
  * @property {string} filename  source filename (e.g. "En-us-water.ogg")
- * @property {string} [mime]
- * @property {number} [size]
- * @property {string} [downloadName]  sanitized friendly filename for chrome.downloads
- * @property {string} [displayName]  human readable form rendered in the panel
- * @property {string|null} [lang]  parsed ISO 639 code, used by the English first sort
+ * @property {string|null} mime
+ * @property {number|null} size
+ * @property {string} downloadName  sanitized friendly filename for chrome.downloads
+ * @property {string} displayName  human readable form rendered in the panel
+ * @property {string|null} lang  parsed ISO 639 code, used by the English first sort
  */
 
 /**
@@ -76,9 +78,22 @@ function showContextInvalidatedMessage() {
     position:fixed;top:20px;right:20px;z-index:2147483647;
     background:#f44336;color:#fff;padding:12px 16px;border-radius:8px;
     font:14px system-ui;max-width:300px;box-shadow:0 4px 12px rgba(0,0,0,.2)`;
-  notice.innerHTML = `
-    <strong>${t.extensionReloaded}</strong><br>${t.refreshMessage}
-    <button onclick="location.reload()" style="margin-left:8px;padding:4px 8px;background:#fff;color:#f44336;border:none;border-radius:4px;cursor:pointer">${t.refreshButton}</button>`;
+
+  // Built with DOM APIs (not innerHTML) so the page's CSP can't block the
+  // reload handler, and so future translation strings can't accidentally
+  // introduce HTML they shouldn't.
+  const strong = document.createElement('strong');
+  strong.textContent = t.extensionReloaded;
+  notice.appendChild(strong);
+  notice.appendChild(document.createElement('br'));
+  notice.appendChild(document.createTextNode(t.refreshMessage));
+
+  const reloadBtn = document.createElement('button');
+  reloadBtn.textContent = t.refreshButton;
+  reloadBtn.style.cssText = 'margin-left:8px;padding:4px 8px;background:#fff;color:#f44336;border:none;border-radius:4px;cursor:pointer';
+  reloadBtn.addEventListener('click', () => location.reload());
+  notice.appendChild(reloadBtn);
+
   document.documentElement.appendChild(notice);
 }
 
@@ -550,6 +565,12 @@ function isAudioInfo(info) {
  * Filter an Action API `pages` array down to audio entries with the fields
  * we care about. Strips any URL query/fragment defensively. Typed as `any[]`
  * because MediaWiki responses don't have a stable TypeScript shape.
+ *
+ * Every result is built with the full AudioItem field set (downloadName,
+ * displayName, lang as their empty/null defaults) so the V8 hidden class
+ * stays stable when main() fills them in. Adding properties later would
+ * force a second shape transition per item.
+ *
  * @param {any[]} pages
  * @returns {AudioItem[]}
  */
@@ -567,8 +588,11 @@ function audioItemsFromPages(pages) {
         title: page.title,
         url: info.url,
         filename: decodeURIComponent(cleanTail),
-        mime: info.mime,
-        size: info.size,
+        mime: info.mime ?? null,
+        size: typeof info.size === 'number' ? info.size : null,
+        downloadName: '',
+        displayName: '',
+        lang: null,
       });
     }
   }
@@ -907,6 +931,7 @@ function createUI(items) {
   const footer = /** @type {HTMLElement | null} */ (panel.querySelector('.audio-panel-footer'));
   let minimized = false;
   const itemUrls = items.map(i => i.url);
+  const prefetchItems = items.map(i => ({ url: i.url, downloadName: i.downloadName }));
   /** @type {number | null} */
   let dismissTimer = null;
   let dismissed = false;
@@ -938,7 +963,7 @@ function createUI(items) {
         // Cache was evicted while panel was minimized. Re-engage: ask
         // background to prefetch again so the next click is still fast.
         dismissed = false;
-        safeSendMessage({ type: 'PREFETCH_AUDIO', urls: itemUrls }, { timeoutMs: 5000 })
+        safeSendMessage({ type: 'PREFETCH_AUDIO', items: prefetchItems }, { timeoutMs: 5000 })
           .catch(() => { /* opportunistic */ });
       }
     }
@@ -986,11 +1011,16 @@ function createUI(items) {
       // Fire and forget prefetch: tell background to start pulling the
       // audio bytes into its cache while the user reads the panel. By the
       // time they click Download, the bytes are usually ready and both
-      // Original and Convert paths skip their network round trip. Not
-      // awaited; panel UX doesn't depend on prefetch finishing.
+      // Original and Convert paths skip their network round trip. Pass
+      // downloadName along so background can speculatively transcode item 0
+      // in Convert/Both mode. Not awaited; panel UX doesn't depend on
+      // prefetch finishing.
       safeSendMessage({
         type: 'PREFETCH_AUDIO',
-        urls: audioFiles.map(item => item.url),
+        items: audioFiles.map(item => ({
+          url: item.url,
+          downloadName: item.downloadName,
+        })),
       }, { timeoutMs: 5000 }).catch(() => { /* opportunistic; ignore failures */ });
     }
   } catch (error) {

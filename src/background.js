@@ -93,25 +93,46 @@ function sanitizeFilename(filename) {
 }
 
 /**
+ * Open a port to the offscreen document, run `handler(port, settle)`, and
+ * resolve/reject exactly once. `settle(true, value)` resolves; `settle(false,
+ * error)` rejects. Handles timeout AND port.onDisconnect so a crashed
+ * offscreen document doesn't leave the caller waiting for the full timeout.
+ *
+ * @template T
+ * @param {number} timeoutMs
+ * @param {(port: any, settle: (ok: boolean, value?: any) => void) => void} handler
+ * @returns {Promise<T>}
+ */
+function withOffscreenPort(timeoutMs, handler) {
+  return new Promise((resolve, reject) => {
+    const port = chrome.runtime.connect({ name: 'ffmpeg' });
+    let settled = false;
+    const settle = (ok, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      port.disconnect();
+      if (ok) resolve(value);
+      else reject(value instanceof Error ? value : new Error(String(value)));
+    };
+    const timer = setTimeout(() => settle(false, new Error(`port timeout (${timeoutMs}ms)`)), timeoutMs);
+    port.onDisconnect.addListener(() => {
+      const why = chrome.runtime.lastError?.message || 'offscreen disconnected';
+      settle(false, new Error(why));
+    });
+    handler(port, settle);
+  });
+}
+
+/**
  * Ping the offscreen document and resolve when it responds with PONG.
  * @param {number} [timeoutMs]
  * @returns {Promise<void>}
  */
 function pingOffscreen(timeoutMs = 3000) {
-  return new Promise((resolve, reject) => {
-    const port = chrome.runtime.connect({ name: 'ffmpeg' });
-    const timer = setTimeout(() => {
-      port.disconnect();
-      reject(new Error('ping timeout'));
-    }, timeoutMs);
-
-    port.onMessage.addListener(/** @param {any} msg */ function onPong(msg) {
-      if (msg.type === 'PONG') {
-        clearTimeout(timer);
-        port.onMessage.removeListener(onPong);
-        port.disconnect();
-        resolve();
-      }
+  return withOffscreenPort(timeoutMs, (port, settle) => {
+    port.onMessage.addListener((msg) => {
+      if (msg?.type === 'PONG') settle(true);
     });
     port.postMessage({ type: 'PING' });
   });
@@ -153,21 +174,14 @@ async function ensureOffscreen() {
 async function prewarmFFmpeg() {
   log('[Background] Pre-warming FFmpeg...');
   await ensureOffscreen();
-  return new Promise((resolve) => {
-    const port = chrome.runtime.connect({ name: 'ffmpeg' });
-    const timer = setTimeout(() => {
-      port.disconnect();
-      resolve();
-    }, 30000);
-    port.onMessage.addListener(/** @param {any} m */ (m) => {
-      if (m.type === 'PREWARMED') {
-        clearTimeout(timer);
-        port.disconnect();
-        resolve();
-      }
+  try {
+    await withOffscreenPort(30000, (port, settle) => {
+      port.onMessage.addListener((msg) => {
+        if (msg?.type === 'PREWARMED') settle(true);
+      });
+      port.postMessage({ type: 'PREWARM' });
     });
-    port.postMessage({ type: 'PREWARM' });
-  });
+  } catch { /* opportunistic */ }
 }
 
 /**
@@ -184,29 +198,20 @@ async function transcodeToWav(src, baseName) {
   log('[Background] Starting transcode...');
   await ensureOffscreen();
 
-  return new Promise((resolve, reject) => {
-    const port = chrome.runtime.connect({ name: 'ffmpeg' });
-    const timeout = setTimeout(() => {
-      port.disconnect();
-      reject(new Error('Transcoding timeout (90s)'));
-    }, 90000);
-
-    port.onMessage.addListener(/** @param {any} msg */ (msg) => {
-      clearTimeout(timeout);
-      port.disconnect();
-
-      if (!msg.ok) {
-        reject(new Error(msg.error || 'Transcode failed'));
+  return withOffscreenPort(90000, (port, settle) => {
+    port.onMessage.addListener((msg) => {
+      if (!msg?.ok) {
+        settle(false, new Error(msg?.error || 'Transcode failed'));
         return;
       }
-
       if (!Array.isArray(msg.audioBytes) || !msg.audioBytes.length) {
-        reject(new Error('Invalid audio data from conversion'));
+        settle(false, new Error('Invalid audio data from conversion'));
         return;
       }
-
-      const arrayBuffer = new Uint8Array(msg.audioBytes).buffer;
-      resolve({ filename: msg.filename, arrayBuffer });
+      settle(true, {
+        filename: msg.filename,
+        arrayBuffer: new Uint8Array(msg.audioBytes).buffer,
+      });
     });
 
     const payload = src instanceof ArrayBuffer
@@ -236,6 +241,115 @@ let audioCacheBytes = 0;
 // re-populate the cache we just tried to evict.
 /** @type {Map<string, AbortController>} */
 const inflightPrefetches = new Map();
+
+// ============== TRANSCODE CACHE ==============
+//
+// When prefetch settles in Convert/Both mode we speculatively transcode the
+// top (most likely to be clicked) item to WAV and stash the result here.
+// On the eventual click, DOWNLOAD_AUDIO checks this cache first and skips
+// ffmpeg.exec entirely. `transcodeInflight` dedupes by URL so that a user
+// click during an in-flight speculative transcode (or vice versa) shares
+// the same Promise instead of queuing duplicate work.
+//
+// Bounded by total bytes; LRU evicted; lost on SW restart. The WAV cache
+// shares the same 20 MB budget shape as the source-bytes cache.
+
+const TRANSCODED_CACHE_MAX_BYTES = 20 * 1024 * 1024;
+
+/** @type {Map<string, { wav: ArrayBuffer, filename: string, lastUsedMs: number }>} */
+const transcodedCache = new Map();
+let transcodedCacheBytes = 0;
+
+/** @type {Map<string, Promise<{ filename: string, arrayBuffer: ArrayBuffer }>>} */
+const transcodeInflight = new Map();
+
+/**
+ * @param {string} url
+ * @returns {{ wav: ArrayBuffer, filename: string } | null}
+ */
+function takeTranscoded(url) {
+  const entry = transcodedCache.get(url);
+  if (!entry) return null;
+  entry.lastUsedMs = Date.now();
+  return { wav: entry.wav, filename: entry.filename };
+}
+
+/**
+ * @param {string} url
+ * @param {string} filename
+ * @param {ArrayBuffer} wav
+ */
+function addTranscoded(url, filename, wav) {
+  if (transcodedCache.has(url)) return;
+  if (wav.byteLength > TRANSCODED_CACHE_MAX_BYTES) return;
+  while (transcodedCacheBytes + wav.byteLength > TRANSCODED_CACHE_MAX_BYTES && transcodedCache.size > 0) {
+    let oldestUrl = null;
+    let oldestTs = Infinity;
+    for (const [u, e] of transcodedCache) {
+      if (e.lastUsedMs < oldestTs) { oldestUrl = u; oldestTs = e.lastUsedMs; }
+    }
+    if (!oldestUrl) break;
+    transcodedCacheBytes -= transcodedCache.get(oldestUrl).wav.byteLength;
+    transcodedCache.delete(oldestUrl);
+  }
+  transcodedCache.set(url, { wav, filename, lastUsedMs: Date.now() });
+  transcodedCacheBytes += wav.byteLength;
+}
+
+/**
+ * Transcode `src` (URL or bytes) to WAV and cache by `url`. Dedupes by url
+ * so concurrent calls (e.g., user click + speculative) share one ffmpeg.exec.
+ * If the URL is already in the WAV cache, returns it directly without
+ * touching the offscreen document.
+ *
+ * @param {string} url  cache key
+ * @param {string | ArrayBuffer} src  passed to transcodeToWav
+ * @param {string} baseName
+ * @returns {Promise<{ filename: string, arrayBuffer: ArrayBuffer }>}
+ */
+async function transcodeForUrl(url, src, baseName) {
+  const pre = takeTranscoded(url);
+  if (pre) return { filename: pre.filename, arrayBuffer: pre.wav };
+
+  const existing = transcodeInflight.get(url);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    const result = await transcodeToWav(src, baseName);
+    addTranscoded(url, result.filename, result.arrayBuffer);
+    return result;
+  })();
+  transcodeInflight.set(url, promise);
+  try {
+    return await promise;
+  } finally {
+    transcodeInflight.delete(url);
+  }
+}
+
+/**
+ * Speculatively transcode a single item's source bytes to WAV. Skips when
+ * the result is already cached, the transcode is already in flight, or the
+ * source bytes aren't in the prefetch cache (we don't want to fetch just to
+ * speculate; that's what the user-triggered Convert path is for).
+ *
+ * @param {string} url
+ * @param {string} downloadName
+ */
+async function triggerSpeculativeTranscode(url, downloadName) {
+  if (transcodedCache.has(url)) return;
+  if (transcodeInflight.has(url)) return;
+  const sourceBytes = takeCached(url);
+  if (!sourceBytes) return;
+
+  const baseName = sanitizeFilename(String(downloadName || '').replace(/\.[^.]+$/, ''));
+  log('[Background] Speculative transcode:', baseName);
+  try {
+    await transcodeForUrl(url, sourceBytes, baseName);
+  } catch (e) {
+    logError('[Background] Speculative transcode failed:', e?.message || e);
+  }
+}
 
 /**
  * Look up a cached entry and bump its lastUsed timestamp. Returns the bytes
@@ -275,34 +389,59 @@ function addToCache(url, bytes) {
 }
 
 /**
- * Fetch a batch of URLs with bounded concurrency and stash results in the
- * cache. Best-effort: per-URL failures are swallowed so one bad URL doesn't
- * starve the others. Skips URLs already cached.
- * @param {string[]} urls
+ * Fetch a batch of items with bounded concurrency and stash bytes in the
+ * source cache. Items carry both the URL (what to fetch) and the
+ * downloadName (used for the speculative-transcode filename if mode is
+ * Convert/Both). Best-effort: per-URL failures are swallowed.
+ *
+ * @param {Array<{ url: string, downloadName: string }>} items
  */
-async function prefetchAudioUrls(urls) {
-  const todo = urls.filter(u => typeof u === 'string' && !audioCache.has(u));
-  if (!todo.length) return;
-  const queue = todo.slice();
-  const workers = Array.from({ length: PREFETCH_CONCURRENCY }, async () => {
-    while (queue.length) {
-      const url = queue.shift();
-      if (!url) continue;
-      const controller = new AbortController();
-      inflightPrefetches.set(url, controller);
-      try {
-        const r = await fetch(url, { credentials: 'omit', signal: controller.signal });
-        if (!r.ok) continue;
-        const bytes = await r.arrayBuffer();
-        if (bytes.byteLength) addToCache(url, bytes);
-      } catch { /* best effort. One URL failing (or AbortError) shouldn't block others. */ }
-      finally {
-        inflightPrefetches.delete(url);
+async function prefetchAudio(items) {
+  if (!Array.isArray(items) || !items.length) return;
+
+  // Skip URLs already cached OR already in flight. The inflight check
+  // prevents repeated PREFETCH_AUDIO messages from spawning duplicate
+  // fetches and overwriting each other's AbortControllers (which would
+  // make PANEL_DISMISSED abort the wrong one).
+  const todo = items
+    .filter(i => i && typeof i.url === 'string')
+    .map(i => i.url)
+    .filter(u => !audioCache.has(u) && !inflightPrefetches.has(u));
+
+  if (todo.length) {
+    const queue = todo.slice();
+    const workers = Array.from({ length: PREFETCH_CONCURRENCY }, async () => {
+      while (queue.length) {
+        const url = queue.shift();
+        if (!url) continue;
+        const controller = new AbortController();
+        inflightPrefetches.set(url, controller);
+        try {
+          const r = await fetch(url, { credentials: 'omit', signal: controller.signal });
+          if (!r.ok) continue;
+          const bytes = await r.arrayBuffer();
+          if (bytes.byteLength) addToCache(url, bytes);
+        } catch { /* best effort. One URL failing (or AbortError) shouldn't block others. */ }
+        finally {
+          inflightPrefetches.delete(url);
+        }
       }
-    }
-  });
-  await Promise.allSettled(workers);
-  log(`[Background] Prefetch done. Cache: ${audioCache.size} items, ${(audioCacheBytes / 1024).toFixed(0)} KB`);
+    });
+    await Promise.allSettled(workers);
+    log(`[Background] Prefetch done. Cache: ${audioCache.size} items, ${(audioCacheBytes / 1024).toFixed(0)} KB`);
+  }
+
+  // Speculative top-item transcode. Fire and forget; the result populates
+  // transcodedCache so the eventual click on item 0 skips ffmpeg.exec.
+  const top = items[0];
+  if (top && top.url && top.downloadName) {
+    try {
+      const { mode = 'original' } = await chrome.storage.sync.get({ mode: 'original' });
+      if (mode === 'convert' || mode === 'both') {
+        triggerSpeculativeTranscode(top.url, top.downloadName);
+      }
+    } catch { /* opportunistic */ }
+  }
 }
 
 /**
@@ -320,6 +459,15 @@ function dismissUrls(urls) {
     if (entry) {
       audioCacheBytes -= entry.bytes.byteLength;
       audioCache.delete(url);
+    }
+    // Also evict the speculative WAV. We can't cancel an in-flight FFmpeg
+    // exec (the wasm worker doesn't support it), so an in-flight speculative
+    // transcode will run to completion; addTranscoded then no-ops on the
+    // already-deleted entry, and the next dismiss/eviction reclaims.
+    const trans = transcodedCache.get(url);
+    if (trans) {
+      transcodedCacheBytes -= trans.wav.byteLength;
+      transcodedCache.delete(url);
     }
   }
 }
@@ -349,7 +497,7 @@ chrome.runtime.onMessage.addListener(
   // Fire-and-forget prefetch. Respond immediately so the content script
   // doesn't await network work that's meant to be opportunistic.
   if (msg?.type === 'PREFETCH_AUDIO') {
-    prefetchAudioUrls(Array.isArray(msg.urls) ? msg.urls : []);
+    prefetchAudio(Array.isArray(msg.items) ? msg.items : []);
     sendResponse({ ok: true });
     return false;
   }
@@ -387,9 +535,12 @@ chrome.runtime.onMessage.addListener(
   (async () => {
     const cached = takeCached(url);
     if (mode === 'convert') {
-      log('[Background] Converting:', originalFilename, folder ? `-> ${folder}/` : '', cached ? '(cached)' : '');
-      // Pass cached bytes when we have them so offscreen skips its own fetch.
-      const { filename, arrayBuffer } = await transcodeToWav(cached || url, baseName);
+      // transcodeForUrl returns immediately if the WAV is cached (speculative
+      // pre-transcode already ran), awaits any in-flight transcode for this
+      // URL, or runs a fresh transcode otherwise. cached || url means we
+      // prefer the prefetched source bytes when we have them.
+      log('[Background] Converting:', originalFilename, folder ? `-> ${folder}/` : '');
+      const { filename, arrayBuffer } = await transcodeForUrl(url, cached || url, baseName);
       const base64 = arrayBufferToBase64(arrayBuffer);
       const dataUrl = `data:audio/wav;base64,${base64}`;
       await chrome.downloads.download({
@@ -429,14 +580,19 @@ chrome.runtime.onMessage.addListener(
   return true; // Keep channel open for async response
 });
 
-// Read-only introspection of the prefetch cache, exposed for tests. Lets a
-// Playwright spec deterministically wait for prefetch to finish without
-// resorting to fixed timeouts. Side-effect free; safe to keep in production.
-/** @returns {{ cachedCount: number, cachedUrls: string[], totalBytes: number }} */
+// Read-only introspection of the prefetch + transcoded caches, exposed for
+// tests. Lets a Playwright spec deterministically wait for prefetch and the
+// speculative transcode to finish without resorting to fixed timeouts.
+// Side-effect free; safe to keep in production.
+/** @returns {{ cachedCount: number, cachedUrls: string[], totalBytes: number, transcodedCount: number, transcodedUrls: string[], transcodedBytes: number, transcodeInflight: string[] }} */
 globalThis._wadInspectAudioCache = () => ({
   cachedCount: audioCache.size,
   cachedUrls: Array.from(audioCache.keys()),
   totalBytes: audioCacheBytes,
+  transcodedCount: transcodedCache.size,
+  transcodedUrls: Array.from(transcodedCache.keys()),
+  transcodedBytes: transcodedCacheBytes,
+  transcodeInflight: Array.from(transcodeInflight.keys()),
 });
 
 })();

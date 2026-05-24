@@ -66,7 +66,21 @@ async function runTranscode(inName, outName) {
   await ffmpeg.exec(args);
 }
 
-// All communication uses Port-based messaging
+// FFmpeg's single in memory filesystem and worker are shared across calls,
+// so concurrent transcodes would race on `in.bin` and `${outBase}.wav`.
+// Serialize TRANSCODE requests through this chain. PING and PREWARM bypass
+// the queue: ping is just a health check, and loadFFmpeg already dedupes
+// via its own loadPromise guard.
+/** @type {Promise<void>} */
+let transcodeQueue = Promise.resolve();
+
+/** @param {() => Promise<void>} task */
+function serializeTranscode(task) {
+  const next = transcodeQueue.then(task, task);
+  transcodeQueue = next.catch(() => {});
+  return next;
+}
+
 chrome.runtime.onConnect.addListener(port => {
   if (port.name !== 'ffmpeg') return;
   log('[Offscreen] Port connected');
@@ -102,36 +116,37 @@ chrome.runtime.onConnect.addListener(port => {
     const inName = 'in.bin';
     const outName = (outBase || 'audio') + '.wav';
 
-    try {
-      // Two paths:
-      //   srcBytes: background's prefetch cache already has the bytes, so
-      //     skip the fetch. Wrap as Uint8Array; FFmpeg loads in parallel.
-      //   srcUrl: no cached bytes. Fetch concurrently with FFmpeg load.
-      const fetchBytes = srcBytes
-        ? Promise.resolve(new Uint8Array(srcBytes))
-        : (async () => {
-            log('[Offscreen] Fetching:', srcUrl.substring(0, 60));
-            const response = await fetch(srcUrl);
-            if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
-            const bytes = new Uint8Array(await response.arrayBuffer());
-            if (!bytes.length) throw new Error('Empty audio data');
-            return bytes;
-          })();
+    await serializeTranscode(async () => {
+      try {
+        // Two paths:
+        //   srcBytes: background's prefetch cache already has the bytes, so
+        //     skip the fetch. Wrap as Uint8Array; FFmpeg loads in parallel.
+        //   srcUrl: no cached bytes. Fetch concurrently with FFmpeg load.
+        const fetchBytes = srcBytes
+          ? Promise.resolve(new Uint8Array(srcBytes))
+          : (async () => {
+              log('[Offscreen] Fetching:', srcUrl.substring(0, 60));
+              const response = await fetch(srcUrl);
+              if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
+              const bytes = new Uint8Array(await response.arrayBuffer());
+              if (!bytes.length) throw new Error('Empty audio data');
+              return bytes;
+            })();
 
-      const [audioBytes] = await Promise.all([fetchBytes, loadFFmpeg()]);
-      await ffmpeg.writeFile(inName, audioBytes);
-      await runTranscode(inName, outName);
+        const [audioBytes] = await Promise.all([fetchBytes, loadFFmpeg()]);
+        await ffmpeg.writeFile(inName, audioBytes);
+        await runTranscode(inName, outName);
 
-      const out = await ffmpeg.readFile(outName);
-      log('[Offscreen] Converted:', out.buffer.byteLength, 'bytes');
-      await cleanupFiles(inName, outName);
+        const out = await ffmpeg.readFile(outName);
+        log('[Offscreen] Converted:', out.buffer.byteLength, 'bytes');
+        await cleanupFiles(inName, outName);
 
-      // Send result as regular array (JSON-serializable over Port)
-      port.postMessage({ ok: true, filename: outName, audioBytes: Array.from(out) });
-    } catch (error) {
-      logError('[Offscreen] Transcode error:', error.message);
-      await cleanupFiles(inName, outName);
-      port.postMessage({ ok: false, error: error.message });
-    }
+        port.postMessage({ ok: true, filename: outName, audioBytes: Array.from(out) });
+      } catch (error) {
+        logError('[Offscreen] Transcode error:', error.message);
+        await cleanupFiles(inName, outName);
+        port.postMessage({ ok: false, error: error.message });
+      }
+    });
   });
 });
