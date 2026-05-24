@@ -281,7 +281,7 @@ export function createUI(items, pageTitle) {
   // When every per-item download succeeds, the Download All button auto-
   // flips to "Downloaded"; symmetrically, when Download All succeeds for
   // an item, that row's button auto-flips. Both directions use this Set
-  // (keyed on AudioItem object — no integer index a page could spoof) and
+  // (keyed on AudioItem object, no integer index a page could spoof) and
   // the itemButtons map below.
   /** @type {Set<unknown>} */
   const downloadedItems = new Set();

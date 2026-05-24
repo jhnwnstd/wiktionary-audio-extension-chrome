@@ -4,7 +4,7 @@
  * external code path can desync the counter.
  *
  * `onEvict(value)` is called AFTER internal state mutates, so a throwing
- * callback can't leave `#bytes` and `#map` inconsistent — the error
+ * callback can't leave `#bytes` and `#map` inconsistent. The error
  * propagates to set/delete; the cache stays intact.
  *
  * @template V

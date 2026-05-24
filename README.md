@@ -2,19 +2,19 @@
 
 [![CI](https://github.com/jhnwnstd/wiktionary-audio-extension-chrome/actions/workflows/ci.yml/badge.svg)](https://github.com/jhnwnstd/wiktionary-audio-extension-chrome/actions/workflows/ci.yml)
 
-Chrome extension for downloading Wiktionary audio as the original file or a locally converted .WAV copy.
+Chrome extension that converts Wiktionary pronunciation audio into WAV files locally.
+
+Converted output is 16-bit PCM at 48 kHz, mono, with triangular dither. The original source files (OGG, Opus, MP3) are also downloadable as-is.
 
 ## Features
 
+- Praat-ready WAV file output 
+- Original source files (OGG, Opus, MP3) downloadable as-is
 - Finds pronunciation audio across Wiktionary language editions
-- Original mode: source files such as OGG, Opus, and MP3
-- Convert mode: 16-bit WAV Linear PCM, 48 kHz, mono, TPDF-dithered
-- Plays a preview of each audio file before download
+- Plays a preview before download
 - Names files with parsed metadata, for example `english_australian_water.ogg`
 
 ## Install
-
-Install directly from this repository.
 
 1. Clone the repository or download and unzip the [latest release](https://github.com/jhnwnstd/wiktionary-audio-extension-chrome/releases/latest).
 2. Open `chrome://extensions`.
@@ -54,7 +54,7 @@ npm run test:e2e    # Playwright tests against local fixtures
 npm run test:live   # live tests against real Wiktionary URLs
 ```
 
-The vendored FFmpeg core is `@ffmpeg/core@0.12.10` ESM at `src/vendor/ffmpeg/core/`. The conversion profile is set in `src/offscreen.js` with `FFMPEG_CORE_PROFILE` and verified by the live convert test.
+Vendored FFmpeg core: `@ffmpeg/core@0.12.10` at `src/vendor/ffmpeg/core/`. Conversion args live in `runTranscode` in `src/offscreen.js`; the live convert test verifies them against the vendored core.
 
 ## License
 
