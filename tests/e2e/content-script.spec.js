@@ -7,6 +7,7 @@
 const { test, expect, chromium } = require('@playwright/test');
 const fs = require('node:fs');
 const path = require('node:path');
+const { enableInspectHook } = require('./_helpers');
 
 const extensionPath = path.resolve(__dirname, '../../src');
 const waterFixture = fs.readFileSync(
@@ -51,6 +52,7 @@ test.describe('content script audio discovery', () => {
         `--load-extension=${extensionPath}`,
       ],
     });
+    await enableInspectHook(context);
 
     // Always intercept the Wiktionary page itself with the local fixture.
     await context.route(WATER_URL, (route) =>

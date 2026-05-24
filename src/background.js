@@ -40,6 +40,7 @@ function arrayBufferToBase64(arrayBuffer) {
 const WINDOWS_RESERVED_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
 const FORBIDDEN_CHARS_RE = /[<>:"/\\|?*\x00-\x1f]/g;
 const UTF8_ENCODER = new TextEncoder();
+const UTF8_DECODER = new TextDecoder();
 
 /** @param {string} s */
 function utf8ByteLength(s) {
@@ -47,17 +48,22 @@ function utf8ByteLength(s) {
 }
 
 /**
+ * Truncate `s` to at most `maxBytes` UTF-8 bytes without splitting a
+ * multi-byte code point. Encode once, then walk back from the limit to
+ * the nearest code-point boundary (a byte that is not a UTF-8
+ * continuation byte: continuation bytes have the bit pattern 10xxxxxx).
+ * O(n) instead of the previous O(n^2) per-char slice-and-reencode loop.
+ *
  * @param {string} s
  * @param {number} maxBytes
  * @returns {string}
  */
 function truncateToBytes(s, maxBytes) {
-  if (utf8ByteLength(s) <= maxBytes) return s;
-  let result = s;
-  while (result.length > 0 && utf8ByteLength(result) > maxBytes) {
-    result = result.slice(0, -1);
-  }
-  return result;
+  const bytes = UTF8_ENCODER.encode(s);
+  if (bytes.length <= maxBytes) return s;
+  let cut = maxBytes;
+  while (cut > 0 && (bytes[cut] & 0xc0) === 0x80) cut--;
+  return UTF8_DECODER.decode(bytes.subarray(0, cut));
 }
 
 /**
@@ -209,8 +215,13 @@ async function transcodeToWav(srcUrl, baseName) {
         settle(false, new Error('Invalid blob URL from conversion'));
         return;
       }
+      // Re-sanitize msg.filename on receive. We already sanitize outBase
+      // before sending TRANSCODE, so offscreen returns a clean name today;
+      // running sanitizeFilename again is defense in depth in case offscreen
+      // ever drifts (or is tampered with) and tries to slip a path-traversal
+      // segment into chrome.downloads.download.
       settle(true, {
-        filename: msg.filename,
+        filename: sanitizeFilename(msg.filename),
         blobUrl: msg.blobUrl,
         byteLength: msg.byteLength || 0,
       });
@@ -549,8 +560,11 @@ async function prefetchAudio(items) {
           // Cheap defense against pathological inputs: bail before reading
           // the body if Wikimedia reports a size larger than any real
           // pronunciation file. Saves bandwidth and prevents cache thrash.
+          // Number.isFinite filters out NaN (parseInt on a non-numeric
+          // header) and Infinity; on either we just fall through and let
+          // the post-read length check do the work.
           const declared = parseInt(r.headers.get('Content-Length') || '0', 10);
-          if (declared > PER_FILE_MAX_BYTES) {
+          if (Number.isFinite(declared) && declared > PER_FILE_MAX_BYTES) {
             controller.abort();
             continue;
           }
@@ -822,19 +836,25 @@ chrome.runtime.onMessage.addListener(
   return true; // Keep channel open for async response
 });
 
-// Read-only introspection of the prefetch + transcoded caches, exposed for
-// tests. Lets a Playwright spec deterministically wait for prefetch and the
-// speculative transcode to finish without resorting to fixed timeouts.
-// Side-effect free; safe to keep in production.
-/** @returns {{ cachedCount: number, cachedUrls: string[], totalBytes: number, transcodedCount: number, transcodedUrls: string[], transcodedBytes: number, transcodeInflight: string[] }} */
-globalThis._wadInspectAudioCache = () => ({
-  cachedCount: audioCache.size,
-  cachedUrls: Array.from(audioCache.keys()),
-  totalBytes: audioCacheBytes,
-  transcodedCount: transcodedCache.size,
-  transcodedUrls: Array.from(transcodedCache.keys()),
-  transcodedBytes: transcodedCacheBytes,
-  transcodeInflight: Array.from(transcodeInflight.keys()),
-});
+// Read-only introspection of the prefetch + transcoded caches, used by the
+// Playwright suite to wait deterministically for prefetch and speculative
+// transcode without fixed timeouts. Gated on globalThis.__WAD_TEST__ so the
+// list of currently-cached audio URLs (a low-sensitivity leak of which
+// Wiktionary entries the user has loaded) is not reachable in normal
+// production use. Tests set the flag in their context setup; nothing the
+// extension exposes to pages can flip it.
+/** @returns {{ cachedCount: number, cachedUrls: string[], totalBytes: number, transcodedCount: number, transcodedUrls: string[], transcodedBytes: number, transcodeInflight: string[] } | null} */
+globalThis._wadInspectAudioCache = () => {
+  if (!globalThis.__WAD_TEST__) return null;
+  return {
+    cachedCount: audioCache.size,
+    cachedUrls: Array.from(audioCache.keys()),
+    totalBytes: audioCacheBytes,
+    transcodedCount: transcodedCache.size,
+    transcodedUrls: Array.from(transcodedCache.keys()),
+    transcodedBytes: transcodedCacheBytes,
+    transcodeInflight: Array.from(transcodeInflight.keys()),
+  };
+};
 
 })();

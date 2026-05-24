@@ -8,6 +8,7 @@
 const { test, expect, chromium } = require('@playwright/test');
 const fs = require('node:fs');
 const path = require('node:path');
+const { enableInspectHook } = require('./_helpers');
 
 const extensionPath = path.resolve(__dirname, '../../src');
 const urls = JSON.parse(
@@ -20,7 +21,7 @@ const discoveryMetrics = [];
 const downloadMetrics = [];
 
 async function launchContext() {
-  return chromium.launchPersistentContext('', {
+  const ctx = await chromium.launchPersistentContext('', {
     channel: process.env.PW_CHANNEL || 'chromium',
     headless: true,
     acceptDownloads: true,
@@ -29,6 +30,8 @@ async function launchContext() {
       `--load-extension=${extensionPath}`,
     ],
   });
+  await enableInspectHook(ctx);
+  return ctx;
 }
 
 async function getExtensionId(context) {

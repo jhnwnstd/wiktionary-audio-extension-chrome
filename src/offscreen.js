@@ -166,11 +166,14 @@ chrome.runtime.onConnect.addListener(port => {
           // Allow Wikimedia's internal redirects, but enforce the allowlist
           // against the final response.url so a redirect chain can't sneak
           // in bytes from outside the allowed origin or shape.
-          const response = await fetch(srcUrl);
+          const response = await fetch(srcUrl, { credentials: 'omit' });
           if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
           if (!isAllowedAudioUrl(response.url)) throw new Error('redirect outside allowlist');
+          // Number.isFinite filters out NaN/Infinity from a malformed header
+          // so a bogus value can't sneak past the early bail. The post-read
+          // bytes.length check still catches oversized payloads.
           const declared = parseInt(response.headers.get('Content-Length') || '0', 10);
-          if (declared > INPUT_MAX_BYTES) throw new Error('declared size over limit');
+          if (Number.isFinite(declared) && declared > INPUT_MAX_BYTES) throw new Error('declared size over limit');
           const bytes = new Uint8Array(await response.arrayBuffer());
           if (!bytes.length) throw new Error('Empty audio data');
           if (bytes.length > INPUT_MAX_BYTES) throw new Error('input over limit');

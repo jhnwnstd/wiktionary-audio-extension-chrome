@@ -10,13 +10,14 @@
 
 const { test, expect, chromium } = require('@playwright/test');
 const path = require('node:path');
+const { enableInspectHook } = require('./_helpers');
 
 const extensionPath = path.resolve(__dirname, '../../src');
 const WATER_URL = 'https://en.wiktionary.org/wiki/water';
 const TRIALS = 5;
 
 async function launchCtx() {
-  return chromium.launchPersistentContext('', {
+  const ctx = await chromium.launchPersistentContext('', {
     channel: process.env.PW_CHANNEL || 'chromium',
     headless: true,
     acceptDownloads: true,
@@ -25,6 +26,8 @@ async function launchCtx() {
       `--load-extension=${extensionPath}`,
     ],
   });
+  await enableInspectHook(ctx);
+  return ctx;
 }
 
 async function setMode(ctx, mode) {

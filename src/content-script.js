@@ -631,7 +631,16 @@ function audioItemsFromPages(pages) {
 async function fetchJson(url) {
   const response = await fetch(url, { credentials: 'omit' });
   if (!response.ok) return null;
-  return response.json();
+  // response.json() rejects on a malformed body. Without this catch, a
+  // single bad continuation pass would propagate out of discoverAudio's
+  // 5-pass loop and abort the entire panel for the page. Treat parse
+  // failure like a transport failure: return null and let the caller
+  // continue with whatever it already has.
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
 }
 
 /**
