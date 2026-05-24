@@ -314,6 +314,66 @@ test.describe('content script audio discovery', () => {
   // Regression: minimize >2s -> background evicts cached bytes and aborts
   // in-flight prefetch. Re-opening after dismissal triggers a fresh prefetch.
   // This pins the "user signaled disengagement" cleanup path.
+  // Regression for the dismiss-aborts-real-download bug: when the click
+  // path issues its own validated fetch (source='click' inflight entry),
+  // a PANEL_DISMISSED that fires during that fetch must NOT abort it.
+  // Only opportunistic prefetches should be abortable on dismiss.
+  //
+  // Setup that forces the click path to its own-fetch branch: the prefetch
+  // is made to fail, so when the click hits ensureValidatedBytes there is
+  // no cached bytes and no in-flight prefetch to await — it registers
+  // source='click' and fetches itself.
+  test('PANEL_DISMISSED does not abort a click-initiated Original download', async () => {
+    const AUDIO_URL = 'https://upload.wikimedia.org/x/En-us-water.ogg';
+    const FAKE_OGG = Buffer.from([
+      0x4f, 0x67, 0x67, 0x53, 0x00, 0x02, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]);
+
+    let fetchCount = 0;
+    await context.route(AUDIO_URL, async (route) => {
+      fetchCount++;
+      if (fetchCount === 1) {
+        // First fetch is the auto-prefetch; fail it so the click path
+        // is forced into its own-fetch branch.
+        await route.abort();
+      } else {
+        // Click-path fetch: delay long enough for the dismiss timer
+        // (minimize + 2 s) to land while we're still in flight.
+        await new Promise(r => setTimeout(r, 4000));
+        await route.fulfill({ status: 200, contentType: 'audio/ogg', body: FAKE_OGG });
+      }
+    });
+
+    await context.route('**/w/api.php**', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(actionApiResponse([{ title: 'File:En-us-water.ogg', url: AUDIO_URL }])),
+      })
+    );
+
+    const page = await context.newPage();
+    await page.goto(WATER_URL);
+    await expect(page.getByTestId('wad-panel')).toBeVisible();
+
+    // Wait long enough for the prefetch to have failed (it aborts fast).
+    await page.waitForTimeout(300);
+
+    const downloadBtn = page.getByTestId('wad-download').first();
+    await downloadBtn.click();
+
+    // Minimize while the click-path fetch is in flight (~500 ms in);
+    // the dismiss timer (2 s) will fire ~2.5 s into the fetch.
+    await page.waitForTimeout(500);
+    await page.getByTestId('wad-minimize').click();
+
+    // The fetch still has ~3 s left; PANEL_DISMISSED will fire mid-fetch.
+    // The fix asserts: the click-source inflight survives, fetch completes,
+    // button reaches Downloaded. Pre-fix it would have flipped to Failed.
+    await expect(downloadBtn).toContainText(/Downloaded/, { timeout: 10_000 });
+  });
+
   test('minimize >2s evicts the prefetch cache; reopening re-prefetches', async () => {
     const AUDIO_URL = 'https://upload.wikimedia.org/x/En-us-water.ogg';
     const FAKE_OGG = Buffer.from([0x4f, 0x67, 0x67, 0x53, 0x00, 0x02, 0x00, 0x00]);

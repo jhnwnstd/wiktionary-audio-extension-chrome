@@ -164,10 +164,12 @@ function revokeBlobInOffscreen(blobUrl) {
 /** @type {ByteBoundedCache<ArrayBuffer>} */
 const audioCache = new ByteBoundedCache(PREFETCH_CACHE_MAX_BYTES);
 
-// PANEL_DISMISSED uses .controller to abort in-progress fetches. The .done
-// Promise lets DOWNLOAD_AUDIO await an in-flight prefetch instead of issuing
-// its own redundant fetch when the user clicks before prefetch settles.
-/** @type {Map<string, { controller: AbortController, done: Promise<void> }>} */
+// .controller lets PANEL_DISMISSED abort in-flight prefetches; .done lets
+// the click path await an in-flight prefetch instead of issuing a redundant
+// fetch. .source distinguishes 'prefetch' (opportunistic, safe to abort on
+// dismiss) from 'click' (user-initiated; must not be cancelled even if the
+// user minimizes the panel mid-download).
+/** @type {Map<string, { controller: AbortController, done: Promise<void>, source: 'prefetch' | 'click' }>} */
 const inflightPrefetches = new Map();
 
 // Speculatively transcoded WAVs, keyed by source URL. `transcodeInflight`
@@ -344,7 +346,8 @@ async function ensureValidatedBytes(url) {
   /** @type {(value?: void) => void} */
   let resolveDone = () => {};
   const done = new Promise(r => { resolveDone = r; });
-  inflightPrefetches.set(url, { controller, done });
+  // source: 'click' so PANEL_DISMISSED can't abort a user-initiated fetch.
+  inflightPrefetches.set(url, { controller, done, source: 'click' });
   try {
     const bytes = await fetchValidatedAudio(url, controller);
     if (bytes) addToCache(url, bytes);
@@ -400,7 +403,7 @@ async function prefetchAudio(items) {
         /** @type {(value?: void) => void} */
         let resolveDone = () => {};
         const done = new Promise(r => { resolveDone = r; });
-        inflightPrefetches.set(url, { controller, done });
+        inflightPrefetches.set(url, { controller, done, source: 'prefetch' });
         try {
           const bytes = await fetchValidatedAudio(url, controller);
           if (bytes) addToCache(url, bytes);
@@ -432,8 +435,11 @@ function dismissUrls(urls) {
   for (const url of urls) {
     if (typeof url !== 'string') continue;
     dismissUrl(url);
+    // Only abort opportunistic prefetches. A click-path fetch is a real
+    // user-initiated download; minimizing the panel mid-download must
+    // not cancel it.
     const inflight = inflightPrefetches.get(url);
-    if (inflight) inflight.controller.abort();
+    if (inflight && inflight.source === 'prefetch') inflight.controller.abort();
     audioCache.delete(url);
     transcodedCache.delete(url);
   }
