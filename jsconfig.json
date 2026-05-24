@@ -9,7 +9,11 @@
     "noEmit": true,
     "skipLibCheck": true,
     "noImplicitAny": false,
-    "strictNullChecks": false
+    "strictNullChecks": false,
+    // No automatic @types/* inclusion. src/ is browser-only; @types/node
+    // is opted in by tests/jsconfig.json. Without this, Node's setTimeout
+    // override masks the DOM signature in popup.js.
+    "types": []
   },
   "include": ["src/**/*.js", "src/**/*.mjs", "src/globals.d.ts"],
   "exclude": ["node_modules", "src/vendor"]

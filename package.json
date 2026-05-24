@@ -28,6 +28,7 @@
   "homepage": "https://github.com/jhnwnstd/wiktionary-audio-extension-chrome#readme",
   "devDependencies": {
     "@playwright/test": "^1.60.0",
+    "@types/node": "^25.9.1",
     "eslint": "^10.1.0",
     "globals": "^17.4.0",
     "typescript": "^5.9.3"

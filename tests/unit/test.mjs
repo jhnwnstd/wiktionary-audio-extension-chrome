@@ -95,7 +95,7 @@ const oggPages = [
 assert(audioItemsFromPages(oggPages).length === 2, '2 OGG files with mediatype=AUDIO');
 assert(audioItemsFromPages(null).length === 0, 'null pages');
 assert(audioItemsFromPages([]).length === 0, 'empty pages array');
-assert(audioItemsFromPages({ '-1': { title: 'File:t.ogg' } }).length === 0, 'rejects v1 object form');
+assert(audioItemsFromPages(/** @type {any} */ ({ '-1': { title: 'File:t.ogg' } })).length === 0, 'rejects v1 object form');
 assert(audioItemsFromPages([{ title: 'File:t.ogg' }]).length === 0, 'no imageinfo');
 assert(
   audioItemsFromPages([{ title: 'File:t.jpg', imageinfo: [{ url: 'https://upload.wikimedia.org/x/t.jpg', mime: 'image/jpeg', mediatype: 'BITMAP' }] }]).length === 0,
@@ -549,7 +549,7 @@ assert(!isAllowedAudioUrl('https://upload.wikimedia.org.attacker.example/'), 'ho
 assert(!isAllowedAudioUrl('not a url'), 'malformed rejected');
 assert(!isAllowedAudioUrl(null), 'null rejected');
 assert(!isAllowedAudioUrl(undefined), 'undefined rejected');
-assert(!isAllowedAudioUrl(42), 'number rejected');
+assert(!isAllowedAudioUrl(/** @type {any} */ (42)), 'number rejected');
 
 section('Byte-cap invariants');
 // OUTPUT_MAX_BYTES is offscreen-local; the documented invariant is that

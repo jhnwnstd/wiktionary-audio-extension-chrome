@@ -1,0 +1,18 @@
+{
+  // Per-folder jsconfig so the IDE (VS Code) applies the same lax settings
+  // to test files that the top-level jsconfig uses for src/. Without this,
+  // // @ts-check on the spec files falls back to default-strict (no
+  // implicit any, strict null checks), and the IDE shows red squigglies
+  // on `chrome`, untyped Playwright params, etc.
+  //
+  // `npm run typecheck` is still scoped to the top-level jsconfig (src/
+  // only); this file exists purely for IDE behavior.
+  "extends": "../jsconfig.json",
+  "compilerOptions": {
+    // Tests use Node APIs (fs, path, __dirname, Buffer, process) plus
+    // @playwright/test. Opt @types/node back in for THIS project only.
+    "types": ["node"]
+  },
+  "include": ["./**/*.js", "./**/*.mjs", "../src/globals.d.ts"],
+  "exclude": ["../node_modules"]
+}
