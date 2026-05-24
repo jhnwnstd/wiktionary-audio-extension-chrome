@@ -859,7 +859,15 @@ async function getMode() {
   if (cachedMode) return cachedMode;
   if (cachedModePromise) return cachedModePromise;
   cachedModePromise = (async () => {
-    const { mode = 'original' } = await chrome.storage.sync.get({ mode: 'original' });
+    // chrome.storage.sync.get can reject on transport errors (sync disabled,
+    // profile transition, quota). The missing-value path already defaults to
+    // 'original'; defaulting on rejection keeps the download button usable
+    // instead of leaving the caller with an unhandled rejection.
+    let mode = 'original';
+    try {
+      const got = await chrome.storage.sync.get({ mode: 'original' });
+      if (got && typeof got.mode === 'string') mode = got.mode;
+    } catch { /* fall through with 'original' */ }
     const m = mode === 'convert' || mode === 'both' ? mode : 'original';
     cachedMode = m;
     return m;
@@ -1224,11 +1232,16 @@ function createUI(items) {
     // then everything else alphabetically by the displayed name. Within each
     // group, displayName comparison gives a stable, intuitive ordering:
     // English dialects sort together, non-English languages sort by name.
+    // One Intl.Collator built outside the comparator: String.localeCompare
+    // constructs an Intl.Collator per call internally, which would be ~N
+    // log N collators for an N-item page (e.g. ~165 for the 33-item
+    // fr/eau entry mentioned in discoverAudio).
+    const collator = new Intl.Collator('en');
     audioFiles.sort((a, b) => {
       const aEn = isEnglishLang(a.lang);
       const bEn = isEnglishLang(b.lang);
       if (aEn !== bEn) return aEn ? -1 : 1;
-      return (a.displayName || '').localeCompare(b.displayName || '');
+      return collator.compare(a.displayName || '', b.displayName || '');
     });
 
     if (audioFiles.length) {

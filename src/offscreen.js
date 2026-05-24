@@ -185,10 +185,16 @@ chrome.runtime.onConnect.addListener(port => {
         await runTranscode(inName, outName);
 
         const out = await ffmpeg.readFile(outName);
-        log('[Offscreen] Converted:', out.buffer.byteLength, 'bytes');
+        // Use the view's byteLength, not out.buffer.byteLength. Emscripten
+        // can return a Uint8Array that's a sub-view of a larger HEAPU8
+        // ArrayBuffer; .buffer.byteLength would over-count. new Blob([out])
+        // ships out.byteLength bytes either way, so the cap check and the
+        // cache-accounting field must use the same value the Blob will.
+        const outBytes = out.byteLength;
+        log('[Offscreen] Converted:', outBytes, 'bytes');
         // Final DoS guard: if `-t 120` somehow didn't bound the output,
         // refuse to ship megabytes back through the message channel.
-        if (out.buffer.byteLength > OUTPUT_MAX_BYTES) {
+        if (outBytes > OUTPUT_MAX_BYTES) {
           await cleanupFiles(inName, outName);
           port.postMessage({ ok: false, error: 'output over limit' });
           return;
@@ -209,7 +215,7 @@ chrome.runtime.onConnect.addListener(port => {
           ok: true,
           filename: outName,
           blobUrl,
-          byteLength: out.buffer.byteLength,
+          byteLength: outBytes,
         });
       } catch (error) {
         logError('[Offscreen] Transcode error:', error.message);

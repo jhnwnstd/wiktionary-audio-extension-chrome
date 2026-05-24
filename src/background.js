@@ -282,7 +282,7 @@ function isAllowedAudioUrl(url) {
 }
 
 // Insertion-order LRU: Map iterates in insertion order, so the first key is
-// the oldest. takeCached() refreshes recency by delete+re-insert, eviction
+// the oldest. peekCached() refreshes recency by delete+re-insert, eviction
 // pops the head. No timestamp comparison and no full-Map scan per eviction.
 /** @type {Map<string, ArrayBuffer>} */
 const audioCache = new Map();
@@ -349,7 +349,7 @@ function dismissUrl(url) {
  * @param {string} url
  * @returns {{ blobUrl: string, filename: string, byteLength: number } | null}
  */
-function takeTranscoded(url) {
+function peekTranscoded(url) {
   const entry = transcodedCache.get(url);
   if (!entry) return null;
   // Refresh recency: delete + re-insert moves the key to the tail of the
@@ -414,7 +414,7 @@ function addTranscoded(url, filename, blobUrl, byteLength) {
  * @returns {Promise<{ filename: string, blobUrl: string, byteLength: number }>}
  */
 async function transcodeForUrl(url, baseName) {
-  const pre = takeTranscoded(url);
+  const pre = peekTranscoded(url);
   if (pre) return pre;
 
   const existing = transcodeInflight.get(url);
@@ -462,12 +462,15 @@ async function triggerSpeculativeTranscode(url, downloadName) {
 
 /**
  * Look up a cached entry and refresh recency. Returns the bytes or null.
- * Delete + re-insert moves the URL to the tail of insertion order so
- * eviction (which pops the head) targets older entries first.
+ * Note: this is a peek, not a take in the Rust sense. The entry stays in
+ * the cache so subsequent clicks for the same URL also hit. The name
+ * (peekCached) reflects that; delete + re-insert moves the URL to the
+ * tail of insertion order so eviction (which pops the head) targets older
+ * entries first.
  * @param {string} url
  * @returns {ArrayBuffer | null}
  */
-function takeCached(url) {
+function peekCached(url) {
   const bytes = audioCache.get(url);
   if (!bytes) return null;
   audioCache.delete(url);
@@ -521,18 +524,22 @@ async function prefetchAudio(items) {
     if (i && typeof i.url === 'string') dismissedUrls.delete(i.url);
   }
 
-  // Kick off FFmpeg pre-warm in parallel with prefetch when Convert/Both
-  // mode is active. The previous design only pre-warmed on POPUP_OPENED;
-  // this catches the much commoner case where the user has Convert set as
-  // their default and never opens the popup. The ~350-650ms wasm load now
-  // runs concurrently with the network fetches instead of being charged to
-  // the eventual click. Opportunistic: failures fall back to the cold path
-  // exactly as before.
-  chrome.storage.sync.get({ mode: 'original' }).then(({ mode }) => {
+  // One mode lookup, two consumers: pre-warm (fires immediately) and the
+  // speculative top-item transcode after prefetch settles. Reused instead
+  // of querying chrome.storage.sync twice in the same scope. The lookup
+  // runs in parallel with prefetch, so prefetch start is not delayed.
+  // Pre-warm catches the common case where the user has Convert set as
+  // their default and never opens the popup; the ~350-650ms wasm load
+  // overlaps the network fetches instead of being charged to the click.
+  // Opportunistic throughout: failures fall back to the cold path.
+  const modePromise = chrome.storage.sync.get({ mode: 'original' })
+    .then(({ mode }) => (mode === 'convert' || mode === 'both' ? mode : 'original'))
+    .catch(() => 'original');
+  modePromise.then(mode => {
     if (mode === 'convert' || mode === 'both') {
       prewarmFFmpeg().catch(() => { /* opportunistic */ });
     }
-  }).catch(() => { /* opportunistic */ });
+  });
 
   // Skip URLs already cached OR already in flight, AND drop anything
   // outside the Wikimedia allowlist. The inflight check prevents repeated
@@ -596,14 +603,13 @@ async function prefetchAudio(items) {
 
   // Speculative top-item transcode. Fire and forget; the result populates
   // transcodedCache so the eventual click on item 0 skips ffmpeg.exec.
+  // Reuses the modePromise resolved above; never a second storage round-trip.
   const top = items[0];
   if (top && top.url && top.downloadName) {
-    try {
-      const { mode = 'original' } = await chrome.storage.sync.get({ mode: 'original' });
-      if (mode === 'convert' || mode === 'both') {
-        triggerSpeculativeTranscode(top.url, top.downloadName);
-      }
-    } catch { /* opportunistic */ }
+    const mode = await modePromise;
+    if (mode === 'convert' || mode === 'both') {
+      triggerSpeculativeTranscode(top.url, top.downloadName);
+    }
   }
 }
 
@@ -803,7 +809,7 @@ chrome.runtime.onMessage.addListener(
         saveAs: false,
       };
     } else {
-      const cached = takeCached(url);
+      const cached = peekCached(url);
       if (cached && cached.byteLength <= DATA_URL_THRESHOLD_BYTES) {
         // Original mode with small cached bytes: data URL is cheap for small
         // payloads and saves the network round-trip. application/octet-stream
