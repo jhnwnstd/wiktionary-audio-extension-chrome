@@ -640,6 +640,61 @@ c6.set('a', 'A', 10);
 c6.delete('a');
 assert(evictions.join(',') === 'A', 'delete calls onEvict');
 
+// Reject inputs that would corrupt the bytes counter. NaN slips past a
+// bare `> maxBytes` because NaN comparisons are always false; without the
+// Number.isFinite gate the NaN would land in #bytes and never recover.
+const c7 = new ByteBoundedCache(100);
+assert(c7.set('nan', 'X', NaN) === false, 'NaN byteCost refused');
+assert(c7.set('neg', 'X', -1) === false, 'negative byteCost refused');
+assert(c7.set('inf', 'X', Infinity) === false, 'Infinity byteCost refused');
+assert(c7.size() === 0 && c7.bytes() === 0, 'refused inserts left cache empty');
+assert(c7.set('ok', 'X', 0) === true, 'zero byteCost accepted (some payloads legitimately have no cost)');
+assert(c7.bytes() === 0, 'zero-byteCost entry contributes 0 to bytes()');
+
+// onEvict-throws keeps cache invariants intact. The contract: a throwing
+// callback propagates the error to set/delete, but #bytes stays in sync
+// with #map and the entry is consistently removed.
+const c8 = new ByteBoundedCache(30, () => { throw new Error('boom'); });
+c8.set('a', 'A', 10);
+c8.set('b', 'B', 10);
+c8.set('c', 'C', 10);
+let threwOnEviction = false;
+try { c8.set('d', 'D', 10); } catch { threwOnEviction = true; }
+assert(threwOnEviction, 'throwing onEvict propagates to set caller');
+// After the throw: the cache state must still be coherent. 'a' was the
+// eviction target (it should be gone), and the failed onEvict shouldn't
+// leave its bytes in the counter.
+assert(c8.has('a') === false, 'invariant: evicted entry is gone even though onEvict threw');
+assert(c8.bytes() === c8.size() * 10, 'invariant: #bytes still equals sum of live entries after throw');
+let deleteThrew = false;
+const c9 = new ByteBoundedCache(100, () => { throw new Error('boom'); });
+c9.set('a', 'A', 10);
+try { c9.delete('a'); } catch { deleteThrew = true; }
+assert(deleteThrew, 'throwing onEvict propagates from delete too');
+assert(c9.has('a') === false, 'delete: entry gone even though onEvict threw');
+assert(c9.bytes() === 0, 'delete: #bytes correct even though onEvict threw');
+
+section('isAudioContentType predicate');
+const { isAudioContentType } = await import('../../src/shared/content-type.mjs');
+// Positive cases.
+assert(isAudioContentType('audio/ogg'), 'audio/ogg accepted');
+assert(isAudioContentType('audio/mpeg'), 'audio/mpeg accepted');
+assert(isAudioContentType('audio/wav'), 'audio/wav accepted');
+assert(isAudioContentType('audio/flac'), 'audio/flac accepted');
+assert(isAudioContentType('AUDIO/OGG'), 'case insensitive');
+assert(isAudioContentType('application/ogg'), 'Wikimedia legacy application/ogg accepted');
+assert(isAudioContentType('application/ogg; codecs=opus'), 'parameters tolerated on application/ogg');
+assert(isAudioContentType('audio/ogg; codecs=vorbis'), 'parameters tolerated on audio/*');
+// Negative cases.
+assert(!isAudioContentType('text/html'), 'text/html rejected');
+assert(!isAudioContentType('image/png'), 'image/png rejected');
+assert(!isAudioContentType('video/mp4'), 'video/mp4 rejected');
+assert(!isAudioContentType('application/pdf'), 'application/pdf rejected');
+assert(!isAudioContentType('application/octet-stream'), 'application/octet-stream rejected');
+assert(!isAudioContentType(''), 'empty string rejected');
+assert(!isAudioContentType(null), 'null rejected');
+assert(!isAudioContentType(undefined), 'undefined rejected');
+
 // ============ SUMMARY ============
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
