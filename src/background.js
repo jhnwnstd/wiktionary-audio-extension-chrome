@@ -316,8 +316,29 @@ const transcodeInflight = new Map();
 // without this guard it would addTranscoded() the result and silently
 // repopulate the cache the user just asked us to clear. A subsequent
 // PREFETCH_AUDIO for the same URL clears the tombstone (re-engagement).
+//
+// Bounded with insertion-order LRU eviction. JS Sets iterate in insertion
+// order, so the first key is the oldest. Without this cap the set would
+// grow monotonically across a long browsing session (every dismissed URL
+// stays forever) which is a quiet memory leak. 512 is several pages worth
+// of pronunciation audio; the only cost of evicting too early is that a
+// late-arriving speculative transcode could repopulate the cache for a URL
+// the user dismissed a very long time ago.
+const DISMISSED_URLS_MAX = 512;
 /** @type {Set<string>} */
 const dismissedUrls = new Set();
+
+/** @param {string} url */
+function dismissUrl(url) {
+  if (dismissedUrls.has(url)) {
+    // Refresh recency: delete + re-add moves the key to the tail.
+    dismissedUrls.delete(url);
+  } else if (dismissedUrls.size >= DISMISSED_URLS_MAX) {
+    const oldest = dismissedUrls.values().next().value;
+    if (oldest !== undefined) dismissedUrls.delete(oldest);
+  }
+  dismissedUrls.add(url);
+}
 
 /**
  * @param {string} url
@@ -494,11 +515,13 @@ async function prefetchAudio(items) {
   // outside the Wikimedia allowlist. The inflight check prevents repeated
   // PREFETCH_AUDIO messages from spawning duplicate fetches and overwriting
   // each other's AbortControllers (which would make PANEL_DISMISSED abort
-  // the wrong one).
-  const todo = items
-    .filter(i => i && isAllowedAudioUrl(i.url))
-    .map(i => i.url)
-    .filter(u => !audioCache.has(u) && !inflightPrefetches.has(u));
+  // the wrong one). Set-based dedup catches duplicate URLs in a single batch
+  // (different file titles that resolve to the same canonical asset).
+  const todo = Array.from(new Set(
+    items
+      .filter(i => i && isAllowedAudioUrl(i.url))
+      .map(i => i.url)
+  )).filter(u => !audioCache.has(u) && !inflightPrefetches.has(u));
 
   if (todo.length) {
     const queue = todo.slice();
@@ -568,7 +591,7 @@ function dismissUrls(urls) {
     // Tombstone the URL so any in-flight prefetch or speculative transcode
     // that completes after this point won't repopulate the cache we're
     // about to clear. A subsequent PREFETCH_AUDIO clears the tombstone.
-    dismissedUrls.add(url);
+    dismissUrl(url);
     const ctrl = inflightPrefetches.get(url);
     if (ctrl) ctrl.abort();
     const entry = audioCache.get(url);
@@ -712,16 +735,24 @@ chrome.runtime.onMessage.addListener(
   if (msg?.type !== 'DOWNLOAD_AUDIO') return false;
 
   const { url, originalFilename, mode, folder } = msg;
-  // Final allowlist gate before we hand a URL to chrome.downloads.download
-  // (which doesn't honor host_permissions) or to FFmpeg. A compromised or
-  // misbehaving content script can't trigger a download from an arbitrary
-  // origin.
+  // Validate message shape before doing privileged work. Even though
+  // sender is internal (isAllowedSender already filtered), defensive shape
+  // checks make invalid states unrepresentable instead of silently falling
+  // through into the wrong branch.
   if (!isAllowedAudioUrl(url)) {
     sendResponse({ ok: false, error: 'url not allowed' });
     return false;
   }
   if (typeof originalFilename !== 'string' || !originalFilename) {
     sendResponse({ ok: false, error: 'invalid filename' });
+    return false;
+  }
+  if (mode !== 'original' && mode !== 'convert' && mode !== 'both') {
+    sendResponse({ ok: false, error: 'invalid mode' });
+    return false;
+  }
+  if (folder !== undefined && typeof folder !== 'string') {
+    sendResponse({ ok: false, error: 'invalid folder' });
     return false;
   }
   const baseName = sanitizeFilename(originalFilename.replace(/\.[^.]+$/, ''));

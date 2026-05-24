@@ -688,9 +688,13 @@ async function discoverAudio(title) {
     const data = await fetchJson(`${apiEndpoint}?${params}`);
     if (!data) break;
 
+    // Dedupe by canonical URL: different File: titles can resolve to the
+    // same upload.wikimedia.org asset (redirects, file aliases). Deduping
+    // by title would still surface those as separate panel rows and trigger
+    // redundant prefetches.
     for (const item of audioItemsFromPages(data.query?.pages)) {
-      if (seen.has(item.title)) continue;
-      seen.add(item.title);
+      if (seen.has(item.url)) continue;
+      seen.add(item.url);
       results.push(item);
     }
 
@@ -965,8 +969,13 @@ function createUI(items) {
   /** @type {Set<number>} */
   const downloadedIndexes = new Set();
 
-  // Delegated click handling for preview + download buttons.
+  // Delegated click handling for preview + download buttons. Reject events
+  // that didn't come from a real user gesture: page scripts can call .click()
+  // or dispatch bubbling events on these buttons since they live in the page
+  // DOM, and we don't want page JS triggering privileged downloads on its
+  // own. event.isTrusted is set to false for any script-generated event.
   panel.addEventListener('click', e => {
+    if (!e.isTrusted) return;
     const target = /** @type {HTMLElement} */ (e.target);
     const preview = /** @type {HTMLButtonElement | null} */ (target.closest('button[data-preview]'));
     if (preview) {
@@ -985,7 +994,12 @@ function createUI(items) {
     });
   });
 
-  if (batchBtn) batchBtn.onclick = () => downloadAll(items, batchBtn);
+  if (batchBtn) {
+    batchBtn.onclick = (e) => {
+      if (!e.isTrusted) return;
+      downloadAll(items, batchBtn);
+    };
+  }
 
   // Minimize/restore pauses any active preview when collapsing. Also
   // gates prefetch lifecycle: minimizing for >2s tells the background to
@@ -1001,7 +1015,8 @@ function createUI(items) {
   let dismissTimer = null;
   let dismissed = false;
 
-  minimizeBtn.onclick = () => {
+  minimizeBtn.onclick = (e) => {
+    if (!e.isTrusted) return;
     minimized = !minimized;
     if (minimized && previewState.audio) previewState.audio.pause();
     if (body) body.style.display = minimized ? 'none' : '';
