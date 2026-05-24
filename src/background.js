@@ -437,32 +437,6 @@ function isAllowedSender(sender) {
   } catch { return false; }
 }
 
-// Sink-side guard for the no-cache Original path. HEAD-checks the URL,
-// post-redirect host, Content-Type, and declared size so chrome.downloads
-// doesn't fetch non-audio or oversized bytes from a misbehaving upstream.
-/** @param {string} url */
-async function assertAudioAtUrl(url) {
-  let head;
-  try {
-    head = await fetch(url, { method: 'HEAD', credentials: 'omit', redirect: 'follow' });
-  } catch {
-    throw new Error('head failed');
-  }
-  if (!head.ok) throw new Error(`fetch failed: ${head.status}`);
-  if (!isAllowedAudioUrl(head.url)) throw new Error('redirect outside allowlist');
-  if (!isAudioContentType(head.headers.get('Content-Type'))) {
-    throw new Error('non-audio Content-Type');
-  }
-  // Number.isFinite filters NaN/Infinity from a malformed header. Wikimedia
-  // sets Content-Length reliably on HEAD; if it's ever missing we fall
-  // through (chrome.downloads has no per-file cap to enforce, so the
-  // remaining defense is the URL allowlist + the disk-write itself).
-  const declared = parseInt(head.headers.get('Content-Length') || '0', 10);
-  if (Number.isFinite(declared) && declared > PER_FILE_MAX_BYTES) {
-    throw new Error('declared size over limit');
-  }
-}
-
 chrome.runtime.onMessage.addListener(
   /**
    * @param {any} msg  arbitrary content; we narrow on `msg.type`
@@ -553,9 +527,10 @@ chrome.runtime.onMessage.addListener(
       } else {
         // Uncached or large: chrome.downloads fetches the URL itself
         // (browser HTTP cache hit from earlier prefetch when possible).
-        // HEAD-revalidate Content-Type at the sink; the cached path
-        // already went through audioCache's isAudioContentType check.
-        await assertAudioAtUrl(url);
+        // No sink-side HEAD revalidation: the URL allowlist already
+        // constrains the blast radius to upload.wikimedia.org, and the
+        // ~1s HEAD latency on the click->ack path wasn't worth the
+        // hypothetical Wikimedia-bug defense it provided.
         log('[Background] Downloading original:', originalFilename, folder ? `-> ${folder}/` : '');
         opts = {
           url,
