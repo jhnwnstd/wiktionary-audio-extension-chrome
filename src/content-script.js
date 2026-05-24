@@ -321,6 +321,12 @@ function describeDialect(code) {
   return normalizeFieldValue(key);
 }
 
+// The escape set below covers the metacharacters meaningful in regex
+// literals WITHOUT the `u` flag. If any caller ever constructs a Unicode-
+// mode regex (RegExp(..., 'u') or /.../u), this set must also escape `-`
+// and `/` to be safe inside character classes, and the function needs to
+// handle Unicode property escapes that the non-Unicode parser tolerates.
+// Today no consumer uses the `u` flag.
 /** @param {string} s */
 function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

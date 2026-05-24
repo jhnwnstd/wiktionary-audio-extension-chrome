@@ -577,6 +577,14 @@ async function prefetchAudio(items) {
           });
           if (!r.ok) continue;
           if (!isAllowedAudioUrl(r.url)) continue;
+          // Enforce the documented invariant ("we cache audio"): drop a
+          // response whose Content-Type isn't audio. Not a security guard
+          // (Wikimedia is allowlisted by host), but it prevents a hypothetical
+          // Wikimedia bug from landing non-audio bytes in the user's Downloads
+          // folder under an audio extension. application/ogg is included
+          // because Wikimedia serves .ogg with that legacy MIME, not audio/ogg.
+          const ct = (r.headers.get('Content-Type') || '').toLowerCase();
+          if (!ct.startsWith('audio/') && ct.split(';')[0].trim() !== 'application/ogg') continue;
           // Cheap defense against pathological inputs: bail before reading
           // the body if Wikimedia reports a size larger than any real
           // pronunciation file. Saves bandwidth and prevents cache thrash.

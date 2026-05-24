@@ -853,6 +853,42 @@ for (let maxBytes = 0; maxBytes <= utf8ByteLength(mixed) + 5; maxBytes++) {
   assert(isValidUtf8Bytes(out), `valid UTF-8 at maxBytes=${maxBytes}`);
 }
 
+// Reads src/{background,content-script,offscreen}.js as text and extracts
+// the AUDIO_HOST_ALLOWLIST literal from each. The three files must declare
+// the same allowlist because each context re-validates URLs independently
+// (defense in depth degrades silently if one file drifts). Comments in the
+// source explicitly call out "keep in sync"; this asserts it mechanically.
+// No eval; regex extraction only so the test stays safe even if the source
+// later picks up a hostile string.
+section('AUDIO_HOST_ALLOWLIST parity across contexts');
+const allowlistFiles = [
+  'src/background.js',
+  'src/content-script.js',
+  'src/offscreen.js',
+];
+const allowlistRe = /AUDIO_HOST_ALLOWLIST\s*=\s*new\s+Set\(\[([^\]]+)\]\)/;
+const stringLiteralRe = /['"]([^'"]+)['"]/g;
+/** @type {Record<string, string[]>} */
+const allowlists = {};
+for (const file of allowlistFiles) {
+  const src = fs.readFileSync(path.join(__dirname, '../../', file), 'utf8');
+  const m = src.match(allowlistRe);
+  assert(m !== null, `${file}: AUDIO_HOST_ALLOWLIST literal located`);
+  const hosts = [];
+  let sm;
+  while ((sm = stringLiteralRe.exec(m[1])) !== null) hosts.push(sm[1]);
+  stringLiteralRe.lastIndex = 0;
+  assert(hosts.length > 0, `${file}: at least one host in allowlist`);
+  allowlists[file] = hosts.sort();
+}
+const reference = allowlists[allowlistFiles[0]].join(',');
+for (const file of allowlistFiles.slice(1)) {
+  assert(
+    allowlists[file].join(',') === reference,
+    `${file} allowlist matches ${allowlistFiles[0]} (got [${allowlists[file].join(', ')}])`
+  );
+}
+
 // ============ SUMMARY ============
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

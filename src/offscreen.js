@@ -169,6 +169,13 @@ chrome.runtime.onConnect.addListener(port => {
           const response = await fetch(srcUrl, { credentials: 'omit' });
           if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
           if (!isAllowedAudioUrl(response.url)) throw new Error('redirect outside allowlist');
+          // Enforce "audio bytes only" before handing to FFmpeg. Same shape
+          // as the prefetch check in background.js: audio/* plus the legacy
+          // application/ogg that Wikimedia still uses for .ogg files.
+          const ct = (response.headers.get('Content-Type') || '').toLowerCase();
+          if (!ct.startsWith('audio/') && ct.split(';')[0].trim() !== 'application/ogg') {
+            throw new Error('non-audio Content-Type');
+          }
           // Number.isFinite filters out NaN/Infinity from a malformed header
           // so a bogus value can't sneak past the early bail. The post-read
           // bytes.length check still catches oversized payloads.
