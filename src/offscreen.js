@@ -43,6 +43,14 @@ async function loadFFmpeg() {
       log(`[Offscreen] FFmpeg loaded in ${Date.now() - start}ms`);
     } catch (error) {
       logError('[Offscreen] FFmpeg load failed:', error);
+      // Kill the worker before a retry. If we lose the race, ffmpeg.load()
+      // is still resolving in the background; without terminate(), a retry
+      // would spawn a second LOAD message and both eventually settle, with
+      // the late one able to replace the worker mid-transcode and trash
+      // MEMFS state. terminate() rejects the pending LOAD and forces the
+      // next loadFFmpeg() to start clean.
+      try { ffmpeg.terminate(); } catch { /* already dead */ }
+      loaded = false;
       loadPromise = null;
       throw error;
     }
@@ -89,11 +97,36 @@ function serializeTranscode(task) {
 
 chrome.runtime.onConnect.addListener(port => {
   if (port.name !== 'ffmpeg') return;
+  // Defense in depth: reject ports from any sender other than this
+  // extension. manifest.json declares no externally_connectable so no
+  // external page can reach this listener today, but if a future commit
+  // ever adds that key, this guard preserves isolation.
+  if (port.sender?.id !== chrome.runtime.id) {
+    try { port.disconnect(); } catch { /* already gone */ }
+    return;
+  }
   log('[Offscreen] Port connected');
+
+  // Track per-port liveness. The background side calls port.disconnect()
+  // on its own timeout or on completion; once that fires, postMessage on
+  // this port throws. safePost gates the throw and lets async paths
+  // (transcode/prewarm) short-circuit cleanly instead of leaving an
+  // unhandled rejection.
+  let portAlive = true;
+  port.onDisconnect.addListener(() => {
+    portAlive = false;
+    log('[Offscreen] Port disconnected');
+  });
+  /** @param {object} msg @returns {boolean} */
+  const safePost = (msg) => {
+    if (!portAlive) return false;
+    try { port.postMessage(msg); return true; }
+    catch { portAlive = false; return false; }
+  };
 
   port.onMessage.addListener(async (msg) => {
     if (msg?.type === 'PING') {
-      port.postMessage({ type: 'PONG', loaded });
+      safePost({ type: 'PONG', loaded });
       return;
     }
 
@@ -101,8 +134,8 @@ chrome.runtime.onConnect.addListener(port => {
       // Load FFmpeg without transcoding. Cold load on first real click is
       // the fallback if this fails.
       loadFFmpeg().then(
-        () => port.postMessage({ type: 'PREWARMED', ok: true }),
-        () => port.postMessage({ type: 'PREWARMED', ok: false }),
+        () => safePost({ type: 'PREWARMED', ok: true }),
+        () => safePost({ type: 'PREWARMED', ok: false }),
       );
       return;
     }
@@ -117,14 +150,14 @@ chrome.runtime.onConnect.addListener(port => {
     }
 
     if (msg?.type !== 'TRANSCODE') {
-      port.postMessage({ ok: false, error: 'Unknown message type' });
+      safePost({ ok: false, error: 'Unknown message type' });
       return;
     }
 
     const { srcUrl, outBase } = msg;
     // Defense in depth: re-validate even though background already did.
     if (!isAllowedAudioUrl(srcUrl)) {
-      port.postMessage({ ok: false, error: 'srcUrl not allowed' });
+      safePost({ ok: false, error: 'srcUrl not allowed' });
       return;
     }
 
@@ -169,7 +202,7 @@ chrome.runtime.onConnect.addListener(port => {
         // Final DoS guard if `-t 120` didn't bound output.
         if (outBytes > OUTPUT_MAX_BYTES) {
           await cleanupFiles(inName, outName);
-          port.postMessage({ ok: false, error: 'output over limit' });
+          safePost({ ok: false, error: 'output over limit' });
           return;
         }
         await cleanupFiles(inName, outName);
@@ -182,17 +215,31 @@ chrome.runtime.onConnect.addListener(port => {
         // Register so the LRU+TTL backstop can revoke us if the SW
         // forgets (SW restart between speculation and click).
         blobRegistry.register(blobUrl);
-        port.postMessage({
+        // If the SW disconnected during the transcode (timeout / restart),
+        // the blob URL is born orphaned: SW will never consume it and
+        // never send REVOKE_BLOB. Revoke immediately rather than waiting
+        // for the blobRegistry TTL sweep (10 min) to reclaim it.
+        if (!portAlive) {
+          try { URL.revokeObjectURL(blobUrl); } catch { /* already gone */ }
+          blobRegistry.unregister(blobUrl);
+          return;
+        }
+        const posted = safePost({
           ok: true,
           filename: outName,
           blobUrl,
           byteLength: outBytes,
         });
+        if (!posted) {
+          // Race lost between portAlive check and postMessage. Same cleanup.
+          try { URL.revokeObjectURL(blobUrl); } catch { /* already gone */ }
+          blobRegistry.unregister(blobUrl);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         logError('[Offscreen] Transcode error:', message);
         await cleanupFiles(inName, outName);
-        port.postMessage({ ok: false, error: message });
+        safePost({ ok: false, error: message });
       }
     });
   });

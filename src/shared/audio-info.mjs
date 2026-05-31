@@ -60,3 +60,16 @@ export function urlTail(url) {
     return tail || 'audio';
   } catch { return 'audio'; }
 }
+
+// Clamp a filename's trailing extension to an audio type. If the trailing
+// extension already matches AUDIO_EXT_RE, returns the filename unchanged;
+// otherwise strips any non-audio extension and appends `.ogg` (Wikimedia's
+// legacy default). Defense in depth so an upstream mediatype misclass'n
+// can't round-trip a non-audio extension to the user's disk.
+/** @param {string} filename @returns {string} */
+export function ensureAudioExtension(filename) {
+  if (typeof filename !== 'string' || !filename) return 'audio.ogg';
+  if (AUDIO_EXT_RE.test(filename)) return filename;
+  const stripped = filename.replace(/\.[a-z0-9]+$/i, '');
+  return (stripped || 'audio') + '.ogg';
+}

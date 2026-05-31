@@ -58,14 +58,27 @@ const DIALECT_ADJECTIVES = {
   qc: 'quebec',
 };
 
-const LANG_DISPLAY = (() => {
-  try { return new Intl.DisplayNames(['en'], { type: 'language', fallback: 'code' }); }
-  catch { return null; }
-})();
-const REGION_DISPLAY = (() => {
-  try { return new Intl.DisplayNames(['en'], { type: 'region', fallback: 'code' }); }
-  catch { return null; }
-})();
+// Intl.DisplayNames instances cached per locale. `[locale, 'en']` lets the
+// runtime fall back to English if the requested locale is missing from
+// ICU data.
+const LANG_DISPLAY_CACHE = new Map();
+function getLangDisplay(locale) {
+  if (LANG_DISPLAY_CACHE.has(locale)) return LANG_DISPLAY_CACHE.get(locale);
+  let inst = null;
+  try { inst = new Intl.DisplayNames([locale, 'en'], { type: 'language', fallback: 'code' }); }
+  catch { /* runtime missing Intl.DisplayNames or unsupported locale */ }
+  LANG_DISPLAY_CACHE.set(locale, inst);
+  return inst;
+}
+const REGION_DISPLAY_CACHE = new Map();
+function getRegionDisplay(locale) {
+  if (REGION_DISPLAY_CACHE.has(locale)) return REGION_DISPLAY_CACHE.get(locale);
+  let inst = null;
+  try { inst = new Intl.DisplayNames([locale, 'en'], { type: 'region', fallback: 'code' }); }
+  catch { /* runtime missing Intl.DisplayNames or unsupported locale */ }
+  REGION_DISPLAY_CACHE.set(locale, inst);
+  return inst;
+}
 
 // Within a single field, multi-word values use `-`. "United States" -> "united-states".
 function slugifyName(s) {
@@ -81,6 +94,9 @@ function normalizeFieldValue(v) {
   return String(v).replace(/[_\s]+/g, '-');
 }
 
+// Stable English slug for filenames. Locale-independent so the same audio
+// file produces the same on-disk filename regardless of which Wiktionary
+// edition the user is on.
 function describeLanguage(code) {
   if (!code) return null;
   let key = code.toLowerCase();
@@ -90,10 +106,11 @@ function describeLanguage(code) {
   if (Object.prototype.hasOwnProperty.call(ISO_639_3_TO_1, key)) {
     key = ISO_639_3_TO_1[key];
   }
-  if (LANG_DISPLAY) {
+  const display = getLangDisplay('en');
+  if (display) {
     try {
-      const display = LANG_DISPLAY.of(key);
-      if (display && display.toLowerCase() !== key) return slugifyName(display);
+      const name = display.of(key);
+      if (name && name.toLowerCase() !== key) return slugifyName(name);
     } catch { /* fall through */ }
   }
   return normalizeFieldValue(key);
@@ -105,6 +122,7 @@ function describeDialect(code) {
   if (Object.prototype.hasOwnProperty.call(DIALECT_ADJECTIVES, key)) {
     return DIALECT_ADJECTIVES[key];
   }
+  const REGION_DISPLAY = getRegionDisplay('en');
   // Compound: `us-inlandnorth` -> `american-inland-north`, piece by piece.
   if (key.includes('-') || key.includes('_')) {
     const parts = key.split(/[-_]/);
@@ -130,6 +148,35 @@ function describeDialect(code) {
   }
   return normalizeFieldValue(key);
 }
+
+// Localized name for display. Returns Intl output verbatim (preserves
+// Unicode and case) so a French Wiktionary page shows "Anglais" rather
+// than the English "English", and a German page shows "Englisch". Falls
+// back to the LANG_OVERRIDES adjective form for non-ISO codes.
+function describeLanguageDisplay(code, locale) {
+  if (!code) return null;
+  let key = code.toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(LANG_OVERRIDES, key)) {
+    return LANG_OVERRIDES[key];
+  }
+  if (Object.prototype.hasOwnProperty.call(ISO_639_3_TO_1, key)) {
+    key = ISO_639_3_TO_1[key];
+  }
+  const display = getLangDisplay(locale);
+  if (display) {
+    try {
+      const name = display.of(key);
+      if (name && name.toLowerCase() !== key) return name;
+    } catch { /* fall through */ }
+  }
+  return key;
+}
+
+// Dialect display intentionally reuses describeDialect (English region
+// adjectives). Dialect labels are typically anglocentric short forms
+// ('American', 'British') that are not meaningfully localized; mixing
+// languages on the panel (e.g. "Anglais American") is a clearer tradeoff
+// than translating only the language portion.
 
 // Escape set is sufficient for non-`u`-flag regexes. If any consumer ever
 // adds the `u` flag, also escape `-` and `/` (significant in `u` mode
@@ -260,14 +307,20 @@ function titleCasePart(s) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-/** @param {ParsedFilename} parsed @param {string} originalFilename */
-export function humanReadableName(parsed, originalFilename) {
+/**
+ * @param {ParsedFilename} parsed
+ * @param {string} originalFilename
+ * @param {string} [locale]  page locale (from pickLocale); defaults to English.
+ *   When set, language and dialect names render in the page's language
+ *   instead of forcing English on every Wiktionary edition.
+ */
+export function humanReadableName(parsed, originalFilename, locale = 'en') {
   if (!parsed.lang && !parsed.dialect && !parsed.speaker) {
     return originalFilename;
   }
   const parts = [];
   if (parsed.lang) {
-    const lang = describeLanguage(parsed.lang);
+    const lang = describeLanguageDisplay(parsed.lang, locale);
     if (lang) parts.push(lang.split('-').map(titleCasePart).join(' '));
   }
   if (parsed.dialect) {

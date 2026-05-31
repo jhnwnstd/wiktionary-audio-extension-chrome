@@ -43,9 +43,11 @@ export function sanitizeFilename(filename) {
     .split('?')[0].split('#')[0]
     .replace(FORBIDDEN_CHARS_RE, '_')
     .replace(/\s+/g, ' ')
-    .replace(/^\.+/, '')
-    .replace(/[. ]+$/, '')
-    .trim();
+    // Strip leading dots AND spaces in one pass. Earlier the two strip
+    // steps could leak a leading dot back in: ". .foo" became "._foo"
+    // after the inner space was trimmed away to expose the second dot.
+    .replace(/^[. ]+/, '')
+    .replace(/[. ]+$/, '');
 
   if (WINDOWS_RESERVED_RE.test(s)) s = '_' + s;
 

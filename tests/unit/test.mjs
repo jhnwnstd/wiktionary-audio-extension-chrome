@@ -3,9 +3,14 @@
 //
 // Run: npm test
 
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+
 import { AUDIO_HOST_ALLOWLIST, isAllowedAudioUrl } from '../../src/shared/audio-allowlist.mjs';
 import {
-  AUDIO_MIMES, AUDIO_EXT_RE, isAudioInfo, validImageInfo, urlTail,
+  AUDIO_MIMES, AUDIO_EXT_RE, isAudioInfo, validImageInfo, urlTail, ensureAudioExtension,
 } from '../../src/shared/audio-info.mjs';
 import {
   PER_FILE_MAX_BYTES, OUTPUT_MAX_BYTES,
@@ -872,6 +877,145 @@ function buildRegistry({ ttlMs = 1000, maxEntries = 4 } = {}) {
   assert(!reg.has('a'), 'throwing revoke: entry still removed');
   assert(reg.has('b'), 'throwing revoke: new entry inserted');
   assert(reg.size() === 1, 'registry size correct after throw');
+}
+
+// Vendored FFmpeg core supply-chain integrity. Catches a malicious or
+// accidental swap of the wasm core during a vendor update. Hashes are
+// regenerated via scripts/regen-ffmpeg-integrity.sh.
+section('Vendored FFmpeg core integrity');
+{
+  const fixturePath = fileURLToPath(new URL('../fixtures/ffmpeg-integrity.json', import.meta.url));
+  const integrity = JSON.parse(readFileSync(fixturePath, 'utf8'));
+  assert(integrity.algorithm === 'sha256', 'integrity: algorithm is sha256');
+  const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
+  for (const [relPath, expected] of Object.entries(integrity.files)) {
+    let actual;
+    try {
+      const bytes = readFileSync(join(repoRoot, relPath));
+      actual = createHash('sha256').update(bytes).digest('hex');
+    } catch (e) {
+      actual = '(unreadable: ' + e.message + ')';
+    }
+    assert(
+      actual === expected,
+      `integrity ${relPath}: expected ${String(expected).slice(0, 12)}..., got ${String(actual).slice(0, 12)}...`
+    );
+  }
+}
+
+// ensureAudioExtension: defense in depth on Original-mode downloads.
+section('ensureAudioExtension');
+{
+  assert(ensureAudioExtension('water.ogg') === 'water.ogg', 'audio ext: .ogg passes through');
+  assert(ensureAudioExtension('water.OPUS') === 'water.OPUS', 'audio ext: .OPUS case-insensitive passes');
+  assert(ensureAudioExtension('water.exe') === 'water.ogg', 'audio ext: .exe clamped to .ogg');
+  assert(ensureAudioExtension('water') === 'water.ogg', 'audio ext: no ext gets .ogg');
+  assert(ensureAudioExtension('water.OGG.exe') === 'water.OGG.ogg', 'audio ext: double-ext clamps trailing');
+  assert(ensureAudioExtension('') === 'audio.ogg', 'audio ext: empty -> audio.ogg');
+  assert(ensureAudioExtension('.ogg') === '.ogg', 'audio ext: dotfile-shaped already audio');
+  assert(ensureAudioExtension('weird.name.with.dots.flac') === 'weird.name.with.dots.flac', 'audio ext: multi-dot stem preserved');
+  assert(ensureAudioExtension(/** @type {any} */ (null)) === 'audio.ogg', 'audio ext: null -> audio.ogg');
+}
+
+// Regression: batchFolderName must handle subdomains beyond 2-3 letters.
+section('batchFolderName: extended subdomain regex');
+{
+  assert(batchFolderName('en.wiktionary.org', 'water') === 'Wiktionary-en-water', 'edition: en preserved');
+  assert(batchFolderName('simple.wiktionary.org', 'water') === 'Wiktionary-simple-water', 'edition: simple no longer collapses');
+  assert(batchFolderName('zh-yue.wiktionary.org', 'water') === 'Wiktionary-zh-yue-water', 'edition: zh-yue hyphenated');
+  assert(batchFolderName('be-tarask.wiktionary.org', 'water') === 'Wiktionary-be-tarask-water', 'edition: be-tarask hyphenated');
+  assert(batchFolderName('bat-smg.wiktionary.org', 'water') === 'Wiktionary-bat-smg-water', 'edition: bat-smg hyphenated');
+  assert(batchFolderName('EN.Wiktionary.org', 'water') === 'Wiktionary-en-water', 'edition: case-insensitive');
+  assert(batchFolderName('attacker.com', 'water') === 'Wiktionary-wiktionary-water', 'edition: non-Wiktionary host falls back');
+}
+
+// Locale-aware display: French and German Wiktionary panels render
+// language labels in the page's language, not English.
+section('humanReadableName: locale-aware language labels');
+{
+  const parsed = parseAudioFilename('De-Wasser.ogg');
+  const en = humanReadableName(parsed, 'De-Wasser.ogg', 'en');
+  const fr = humanReadableName(parsed, 'De-Wasser.ogg', 'fr');
+  const de = humanReadableName(parsed, 'De-Wasser.ogg', 'de');
+  assert(en === "German 'Wasser' .ogg", 'locale en: "German"');
+  // fr/de may vary by ICU data version; assert the locale-specific name
+  // appears and that the English form does NOT (the bug we are guarding
+  // against was always-English).
+  assert(/[Aa]llemand/.test(fr), 'locale fr: "Allemand"');
+  assert(!/German/.test(fr), 'locale fr: not English fallback');
+  assert(/Deutsch/.test(de), 'locale de: "Deutsch"');
+  assert(!/German/.test(de), 'locale de: not English fallback');
+  // Default locale is English (back-compat with friendly-filename tests).
+  const defLocale = humanReadableName(parsed, 'De-Wasser.ogg');
+  assert(defLocale === "German 'Wasser' .ogg", 'locale default: English');
+}
+
+// sanitizeFilename fuzz: random byte inputs must always satisfy invariants.
+section('sanitizeFilename fuzz invariants');
+{
+  // Deterministic PRNG so failures reproduce. xorshift32 is enough for
+  // property tests without bringing in seedrandom.
+  let seed = 0x9E3779B9 >>> 0;
+  const rand = () => {
+    seed ^= seed << 13; seed >>>= 0;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5; seed >>>= 0;
+    return seed / 0x100000000;
+  };
+  const FORBIDDEN = /[<>:"/\\|?*\x00-\x1f]/;
+  let allOk = true;
+  let firstFailure = null;
+  for (let i = 0; i < 500; i++) {
+    const len = Math.floor(rand() * 80);
+    let s = '';
+    for (let j = 0; j < len; j++) {
+      // Bias toward forbidden chars to hit the cleaning paths often.
+      const r = rand();
+      if (r < 0.20) s += '/';
+      else if (r < 0.35) s += '\\';
+      else if (r < 0.45) s += ' ';
+      else if (r < 0.55) s += '.';
+      else if (r < 0.65) s += ' ';
+      else s += String.fromCharCode(0x20 + Math.floor(rand() * 0x60));
+    }
+    const out = sanitizeFilename(s);
+    const okType = typeof out === 'string' && out.length > 0;
+    const okNoForbidden = !FORBIDDEN.test(out);
+    const okNoLeadingDot = !out.startsWith('.') || out === '.ogg';  // .ogg etc are valid below
+    const okSize = utf8ByteLength(out) <= 255;
+    const okTrailing = !/[. ]$/.test(out);
+    if (!(okType && okNoForbidden && okNoLeadingDot && okSize && okTrailing)) {
+      allOk = false;
+      if (!firstFailure) firstFailure = { input: s, output: out };
+      break;
+    }
+  }
+  assert(allOk, 'fuzz: 500 inputs all preserve sanitize invariants' + (firstFailure ? ` (failed on input ${JSON.stringify(firstFailure.input)} -> ${JSON.stringify(firstFailure.output)})` : ''));
+}
+
+// manifest.json parses, version matches package.json, web_accessible_resources
+// matches the directories that content-script.js dynamic-imports at runtime.
+section('manifest.json parity');
+{
+  const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
+  const manifest = JSON.parse(readFileSync(join(repoRoot, 'src/manifest.json'), 'utf8'));
+  const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'));
+  assert(manifest.version === pkg.version, `manifest.version (${manifest.version}) === package.version (${pkg.version})`);
+
+  const csScript = readFileSync(join(repoRoot, 'src/content-script.js'), 'utf8');
+  const loadCalls = Array.from(csScript.matchAll(/load\(['"]([^'"]+)['"]\)/g)).map(m => m[1]);
+  assert(loadCalls.length > 0, 'content-script.js: at least one dynamic load() call detected');
+  const wars = manifest.web_accessible_resources?.[0]?.resources ?? [];
+  const allowedDirs = wars
+    .filter(/** @param {string} r */ r => r.endsWith('/*.mjs'))
+    .map(/** @param {string} r */ r => r.slice(0, r.indexOf('/')));
+  for (const path of loadCalls) {
+    const dir = path.includes('/') ? path.slice(0, path.indexOf('/')) : '';
+    assert(
+      allowedDirs.includes(dir),
+      `web_accessible_resources covers content-script load('${path}') (dir '${dir}')`
+    );
+  }
 }
 
 // ============ SUMMARY ============

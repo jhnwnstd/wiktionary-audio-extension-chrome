@@ -25,18 +25,25 @@
 
     const [{ parseAudioFilename, friendlyAudioFilename, humanReadableName },
             { createUI },
-            { safeSendMessage }] = await Promise.all([
+            { safeSendMessage },
+            { pickLocale }] = await Promise.all([
       load('content/filename.mjs'),
       load('content/ui.mjs'),
       load('content/context.mjs'),
+      load('shared/i18n.mjs'),
     ]);
+
+    // Page locale drives language-label rendering in the panel (the
+    // filename stays in stable English so the same audio file lands on
+    // disk with the same name on every Wiktionary edition).
+    const locale = pickLocale(location.hostname);
 
     // pageTitle anchors the parser so hyphenated speakers vs compound
     // words (e.g. well-known) disambiguate correctly.
     audioFiles.forEach(item => {
       const parsed = parseAudioFilename(item.filename, pageTitle);
       item.downloadName = friendlyAudioFilename(parsed);
-      item.displayName = humanReadableName(parsed, item.filename);
+      item.displayName = humanReadableName(parsed, item.filename, locale);
       item.lang = parsed.lang;
     });
 

@@ -38,13 +38,35 @@ const FEEDBACK_COLORS = {
 const FEEDBACK_IDLE_BG = '#1a73e8';
 const FEEDBACK_RESET_MS = 2000;
 
+// Capture once at button creation so the timer always restores to the
+// real idle label rather than whatever showFeedback set on a previous
+// call. The lazy-capture pattern previously here could, after a
+// success-then-error sequence, restore the button to "Downloaded"
+// instead of "Download".
+function captureIdleLabel(button) {
+  if (button._originalText === undefined) {
+    button._originalText = button.textContent;
+  }
+}
+
+// createUI installs the panel's live region updater here. Default is a
+// no-op so callers in non-panel contexts (tests, future SW usage) stay
+// safe. Screen readers ignore button text changes inside shadow DOM; the
+// live region is what surfaces success/failure to assistive tech.
+/** @type {(msg: string) => void} */
+let liveAnnounce = () => {};
+
 function showFeedback(button, message, kind = 'success') {
   if (button._feedbackTimer) clearTimeout(button._feedbackTimer);
-  if (!button._originalText) button._originalText = button.textContent;
+  captureIdleLabel(button);
 
   button.textContent = message;
   button.style.background = FEEDBACK_COLORS[kind] || FEEDBACK_COLORS.success;
   button.disabled = kind !== 'success';
+
+  if (kind === 'success' || kind === 'error' || kind === 'partial') {
+    liveAnnounce(message);
+  }
 
   if (kind === 'progress' || kind === 'success') return;
 
@@ -52,7 +74,6 @@ function showFeedback(button, message, kind = 'success') {
     button.textContent = button._originalText;
     button.style.background = FEEDBACK_IDLE_BG;
     button.disabled = false;
-    delete button._originalText;
     delete button._feedbackTimer;
   }, FEEDBACK_RESET_MS);
 }
@@ -146,6 +167,27 @@ async function downloadAll(items, button, pageTitle, onItemSuccess) {
 
 const PLAY_SVG = `<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>`;
 const PAUSE_SVG = `<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z" fill="currentColor"/></svg>`;
+const PREVIEW_IDLE_BG = '#eef2f7';
+const PREVIEW_IDLE_COLOR = '#1a73e8';
+
+// Preview buttons use SVG icons (not text), so showFeedback's text-swap
+// would obliterate the icon. Brief background + title change instead, so
+// a play() rejection or audio load error still gives the user something
+// to see and screen readers something to announce.
+function showPreviewError(button) {
+  if (button._previewErrorTimer) clearTimeout(button._previewErrorTimer);
+  if (button._previewIdleTitle === undefined) button._previewIdleTitle = button.title;
+  button.style.background = FEEDBACK_COLORS.error;
+  button.style.color = '#fff';
+  button.title = t.failed;
+  button._previewErrorTimer = setTimeout(() => {
+    button.style.background = PREVIEW_IDLE_BG;
+    button.style.color = PREVIEW_IDLE_COLOR;
+    button.title = button._previewIdleTitle;
+    delete button._previewIdleTitle;
+    delete button._previewErrorTimer;
+  }, FEEDBACK_RESET_MS);
+}
 
 // One shared Audio element: switching previews swaps src, so we don't pile
 // up listeners across N elements and can explicitly tear down the previous
@@ -162,17 +204,32 @@ function ensurePreviewAudio() {
   const a = new Audio();
   // Listeners read from previewState so the active button can swap freely.
   a.addEventListener('play', () => {
-    if (previewState.button) previewState.button.innerHTML = PAUSE_SVG;
+    if (previewState.button) {
+      previewState.button.innerHTML = PAUSE_SVG;
+      previewState.button.setAttribute('aria-pressed', 'true');
+    }
   });
   a.addEventListener('pause', () => {
-    if (previewState.button) previewState.button.innerHTML = PLAY_SVG;
+    if (previewState.button) {
+      previewState.button.innerHTML = PLAY_SVG;
+      previewState.button.setAttribute('aria-pressed', 'false');
+    }
   });
-  const reset = () => {
-    if (previewState.button) previewState.button.innerHTML = PLAY_SVG;
+  a.addEventListener('ended', () => {
+    if (previewState.button) {
+      previewState.button.innerHTML = PLAY_SVG;
+      previewState.button.setAttribute('aria-pressed', 'false');
+    }
     previewState.button = null;
-  };
-  a.addEventListener('ended', reset);
-  a.addEventListener('error', reset);
+  });
+  a.addEventListener('error', () => {
+    if (previewState.button) {
+      previewState.button.innerHTML = PLAY_SVG;
+      previewState.button.setAttribute('aria-pressed', 'false');
+      showPreviewError(previewState.button);
+    }
+    previewState.button = null;
+  });
   previewState.audio = a;
   return a;
 }
@@ -182,7 +239,7 @@ function previewAudio(item, button) {
 
   // Same button = toggle play/pause.
   if (previewState.button === button) {
-    if (audio.paused) audio.play().catch(() => {});
+    if (audio.paused) audio.play().catch(() => { showPreviewError(button); });
     else audio.pause();
     return;
   }
@@ -198,6 +255,7 @@ function previewAudio(item, button) {
   audio.play().catch(() => {
     if (previewState.button === button) {
       button.innerHTML = PLAY_SVG;
+      showPreviewError(button);
       previewState.button = null;
     }
   });
@@ -260,23 +318,45 @@ export function createUI(items, pageTitle) {
   const panel = document.createElement('div');
   panel.id = 'audio-panel';
   panel.setAttribute('data-testid', 'wad-panel');
+  panel.setAttribute('role', 'region');
+  panel.setAttribute('aria-label', t.audioFiles);
   panel.style.cssText = PANEL_STYLE;
 
   const header = document.createElement('div');
   header.style.cssText = HEADER_STYLE;
-  header.title = 'Pronunciation audio found on this Wiktionary page by the Wiktionary Audio Downloader extension';
   const headerText = document.createElement('span');
   headerText.textContent = t.audioFiles;
+  const bodyId = 'wad-body-' + Math.random().toString(36).slice(2, 8);
   const minimizeBtn = document.createElement('button');
   minimizeBtn.setAttribute('data-testid', 'wad-minimize');
+  minimizeBtn.setAttribute('aria-expanded', 'true');
+  minimizeBtn.setAttribute('aria-controls', bodyId);
+  minimizeBtn.setAttribute('aria-label', 'Minimize panel');
   minimizeBtn.style.cssText = MINIMIZE_STYLE;
   minimizeBtn.title = 'Minimize panel';
   minimizeBtn.textContent = '−';
   header.append(headerText, minimizeBtn);
 
   const body = document.createElement('div');
+  body.id = bodyId;
   body.className = 'audio-panel-body';
   body.style.cssText = BODY_STYLE;
+
+  // Visually-hidden live region for assistive tech. showFeedback writes
+  // here on terminal states (success/error/partial) so screen readers
+  // hear "Downloaded" or "Failed" without focus tracking.
+  const statusLive = document.createElement('div');
+  statusLive.setAttribute('aria-live', 'polite');
+  statusLive.setAttribute('role', 'status');
+  statusLive.style.cssText = 'position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap';
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let liveTimer = null;
+  liveAnnounce = (msg) => {
+    if (liveTimer) clearTimeout(liveTimer);
+    // Clear-then-set forces re-announcement when message repeats.
+    statusLive.textContent = '';
+    liveTimer = setTimeout(() => { statusLive.textContent = msg; liveTimer = null; }, 30);
+  };
 
   // When every per-item download succeeds, the Download All button auto-
   // flips to "Downloaded"; symmetrically, when Download All succeeds for
@@ -298,6 +378,8 @@ export function createUI(items, pageTitle) {
 
     const previewBtn = document.createElement('button');
     previewBtn.setAttribute('data-testid', 'wad-preview');
+    previewBtn.setAttribute('aria-label', 'Preview ' + (item.displayName || item.filename));
+    previewBtn.setAttribute('aria-pressed', 'false');
     previewBtn.style.cssText = PREVIEW_STYLE;
     previewBtn.title = 'Preview';
     previewBtn.innerHTML = PLAY_SVG;
@@ -331,7 +413,7 @@ export function createUI(items, pageTitle) {
     body.appendChild(row);
   }
 
-  panel.append(header, body);
+  panel.append(header, body, statusLive);
 
   let footer = /** @type {HTMLElement | null} */ (null);
   if (items.length > 1) {
@@ -364,36 +446,93 @@ export function createUI(items, pageTitle) {
   let dismissTimer = null;
   let dismissed = false;
 
-  minimizeBtn.addEventListener('click', (e) => {
-    if (!e.isTrusted) return;
-    minimized = !minimized;
+  /** @param {boolean} next */
+  function setMinimized(next) {
+    minimized = next;
     if (minimized && previewState.audio) previewState.audio.pause();
     body.style.display = minimized ? 'none' : '';
     if (footer) footer.style.display = minimized ? 'none' : 'flex';
     minimizeBtn.textContent = minimized ? '+' : '−';
     minimizeBtn.title = minimized ? 'Expand panel' : 'Minimize panel';
+    minimizeBtn.setAttribute('aria-label', minimized ? 'Expand panel' : 'Minimize panel');
+    minimizeBtn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
+  }
 
-    if (minimized) {
-      dismissTimer = /** @type {any} */ (setTimeout(() => {
-        dismissTimer = null;
-        dismissed = true;
-        safeSendMessage({ type: 'PANEL_DISMISSED', urls: itemUrls }, { timeoutMs: 5000 })
-          .catch(() => { /* opportunistic */ });
-      }, 2000));
-    } else {
-      if (dismissTimer !== null) {
-        clearTimeout(dismissTimer);
-        dismissTimer = null;
-      }
-      if (dismissed) {
-        dismissed = false;
-        safeSendMessage({ type: 'PREFETCH_AUDIO', items: prefetchItems }, { timeoutMs: 5000 })
-          .catch(() => { /* opportunistic */ });
-      }
+  function startMinimize() {
+    setMinimized(true);
+    dismissTimer = /** @type {any} */ (setTimeout(() => {
+      dismissTimer = null;
+      dismissed = true;
+      safeSendMessage({ type: 'PANEL_DISMISSED', urls: itemUrls }, { timeoutMs: 5000 })
+        .catch(() => { /* opportunistic */ });
+    }, 2000));
+  }
+
+  function startExpand() {
+    setMinimized(false);
+    if (dismissTimer !== null) {
+      clearTimeout(dismissTimer);
+      dismissTimer = null;
+    }
+    if (dismissed) {
+      dismissed = false;
+      safeSendMessage({ type: 'PREFETCH_AUDIO', items: prefetchItems }, { timeoutMs: 5000 })
+        .catch(() => { /* opportunistic */ });
+    }
+  }
+
+  minimizeBtn.addEventListener('click', (e) => {
+    if (!e.isTrusted) return;
+    if (minimized) startExpand();
+    else startMinimize();
+  });
+
+  // Escape from anywhere inside the panel pauses the preview if it is
+  // playing, otherwise minimizes the panel (which queues PANEL_DISMISSED
+  // via the existing 2-second timer). Scoped to the panel so we never
+  // preempt the page's own Escape handlers.
+  panel.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (previewState.audio && !previewState.audio.paused) {
+      previewState.audio.pause();
+      e.preventDefault();
+      return;
+    }
+    if (!minimized) {
+      startMinimize();
+      e.preventDefault();
     }
   });
   minimizeBtn.addEventListener('mouseover', () => { minimizeBtn.style.background = '#f0f1f3'; });
   minimizeBtn.addEventListener('mouseout', () => { minimizeBtn.style.background = 'none'; });
+
+  // SW restart detection via visibilitychange. The SW's audioCache lives
+  // in module scope and is reclaimed on SW idle eviction. If the user
+  // tabs away from a Wiktionary page longer than the SW idle timeout
+  // (~30 s in practice), the prefetched bytes are gone but the panel
+  // doesn't know, so the next click pays full network latency. Re-issue
+  // PREFETCH_AUDIO on visibility-becomes-visible after a long invisible
+  // gap so the cache is warm by the time the user clicks. Background
+  // dedupes via inflightPrefetches and audioCache.has, so a redundant
+  // send is cheap. Skipped while the panel is minimized-and-dismissed
+  // (PANEL_DISMISSED already aborted; un-minimize is the trigger there).
+  const VISIBILITY_REPRIME_GAP_MS = 25000;
+  let lastHiddenAt = 0;
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      lastHiddenAt = Date.now();
+      return;
+    }
+    if (document.visibilityState !== 'visible') return;
+    if (dismissed) return;
+    if (!lastHiddenAt) return;
+    const gap = Date.now() - lastHiddenAt;
+    lastHiddenAt = 0;
+    if (gap < VISIBILITY_REPRIME_GAP_MS) return;
+    if (!isExtensionContextValid()) return;
+    safeSendMessage({ type: 'PREFETCH_AUDIO', items: prefetchItems }, { timeoutMs: 5000 })
+      .catch(() => { /* opportunistic */ });
+  });
 
   root.appendChild(panel);
   document.documentElement.appendChild(host);

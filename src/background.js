@@ -14,6 +14,7 @@ import { sanitizeFilename } from './shared/sanitize-filename.mjs';
 import { pathWithFolder } from './shared/paths.mjs';
 import { ByteBoundedCache } from './shared/byte-bounded-cache.mjs';
 import { isAudioContentType } from './shared/content-type.mjs';
+import { ensureAudioExtension } from './shared/audio-info.mjs';
 
 const DEBUG = false;
 const log = DEBUG ? console.log.bind(console) : () => {};
@@ -72,11 +73,19 @@ function pingOffscreen(timeoutMs = 3000) {
 }
 
 async function ensureOffscreen() {
+  // WORKERS covers ffmpeg.wasm's worker; BLOBS (Chrome 116+) covers the
+  // URL.createObjectURL calls in the transcode success path. Feature-detect
+  // BLOBS so the call doesn't fail on Chrome 109-115, which doesn't know
+  // the enum value.
+  const reasons = [chrome.offscreen.Reason.WORKERS];
+  if ('BLOBS' in chrome.offscreen.Reason) {
+    reasons.push(chrome.offscreen.Reason.BLOBS);
+  }
   try {
     await chrome.offscreen.createDocument({
       url: 'offscreen.html',
-      reasons: [chrome.offscreen.Reason.WORKERS],
-      justification: 'Run ffmpeg.wasm for audio conversion'
+      reasons,
+      justification: 'Run ffmpeg.wasm for audio conversion and mint blob URLs for converted output'
     });
   } catch { /* already exists; Chrome enforces single offscreen doc */ }
 
@@ -445,6 +454,25 @@ function dismissUrls(urls) {
   }
 }
 
+// Module-scope map keyed by chrome.downloads.download id. The top-level
+// chrome.downloads.onChanged listener below routes terminal events into
+// the matching entry's resolve. Per-call listener registration would die
+// with MV3 SW idle eviction during the wait window; top-level registration
+// survives because MV3 re-runs the SW module on event delivery.
+/** @type {Map<number, { resolve: (state: string) => void, timer: ReturnType<typeof setTimeout> }>} */
+const pendingDownloads = new Map();
+
+chrome.downloads.onChanged.addListener(/** @param {any} delta */ delta => {
+  const pending = pendingDownloads.get(delta.id);
+  if (!pending) return;
+  const next = delta.state?.current;
+  if (next === 'complete' || next === 'interrupted') {
+    pendingDownloads.delete(delta.id);
+    clearTimeout(pending.timer);
+    pending.resolve(next);
+  }
+});
+
 // Resolve when a download reaches a terminal state. Returns 'complete' or
 // 'interrupted' so callers distinguish a real save from a cancel / block.
 /**
@@ -454,28 +482,27 @@ function dismissUrls(urls) {
  */
 function waitForDownloadComplete(downloadId, timeoutMs = 60000) {
   return new Promise((resolve, reject) => {
-    /** @param {any} delta */
-    const onChanged = (delta) => {
-      if (delta.id !== downloadId) return;
-      const next = delta.state?.current;
-      if (next === 'complete' || next === 'interrupted') {
-        chrome.downloads.onChanged.removeListener(onChanged);
-        clearTimeout(timer);
-        resolve(next);
-      }
-    };
     const timer = setTimeout(() => {
-      chrome.downloads.onChanged.removeListener(onChanged);
+      pendingDownloads.delete(downloadId);
       reject(new Error(`download timeout (${timeoutMs}ms)`));
     }, timeoutMs);
-    chrome.downloads.onChanged.addListener(onChanged);
-    // Race guard: download may already be terminal before listener attached.
+    pendingDownloads.set(downloadId, { resolve, timer });
+    // Race guard: download may already be terminal before the listener
+    // would have seen its delta. Re-check current state once and self-
+    // resolve from the map.
     chrome.downloads.search({ id: downloadId }, /** @param {any[]} items */ (items) => {
+      // chrome.runtime.lastError on search means the downloads database
+      // is busy or unavailable. The onChanged listener and timeout still
+      // provide the safety net; a no-op here is correct.
+      if (chrome.runtime.lastError) return;
       const item = items?.[0];
       if (item && (item.state === 'complete' || item.state === 'interrupted')) {
-        chrome.downloads.onChanged.removeListener(onChanged);
-        clearTimeout(timer);
-        resolve(item.state);
+        const p = pendingDownloads.get(downloadId);
+        if (p) {
+          pendingDownloads.delete(downloadId);
+          clearTimeout(p.timer);
+          p.resolve(item.state);
+        }
       }
     });
   });
@@ -583,9 +610,13 @@ chrome.runtime.onMessage.addListener(
       const bytes = await ensureValidatedBytes(url);
       if (!bytes) throw new Error('audio fetch failed');
       log('[Background] Downloading original (data URL):', originalFilename, folder ? `-> ${folder}/` : '');
+      // Clamp the trailing extension to an audio type before it hits disk.
+      // fetchValidatedAudio already confirmed the bytes are audio; this
+      // belts-and-braces guards against an upstream mediatype filter slip
+      // that lets a deceptive .exe-suffixed filename round-trip through.
       opts = {
         url: `data:application/octet-stream;base64,${arrayBufferToBase64(bytes)}`,
-        filename: pathWithFolder(folder, originalFilename),
+        filename: pathWithFolder(folder, ensureAudioExtension(originalFilename)),
         saveAs: false,
       };
     }
