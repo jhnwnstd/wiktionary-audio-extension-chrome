@@ -487,12 +487,15 @@ export function createUI(items, pageTitle) {
     else startMinimize();
   });
 
-  // Escape from anywhere inside the panel pauses the preview if it is
-  // playing, otherwise minimizes the panel (which queues PANEL_DISMISSED
-  // via the existing 2-second timer). Scoped to the panel so we never
-  // preempt the page's own Escape handlers.
-  panel.addEventListener('keydown', (e) => {
+  // Escape pauses the preview if it is playing, otherwise minimizes the
+  // panel (which queues PANEL_DISMISSED via the existing 2-second timer).
+  // Listening on the document covers the ambient case (user reading the
+  // page, no panel button focused); the form-field guard avoids preempting
+  // Wiktionary's own ESC semantics in search boxes or rich-text editors.
+  document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    const ae = /** @type {HTMLElement | null} */ (document.activeElement);
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return;
     if (previewState.audio && !previewState.audio.paused) {
       previewState.audio.pause();
       e.preventDefault();
