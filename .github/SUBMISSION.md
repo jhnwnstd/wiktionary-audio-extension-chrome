@@ -10,7 +10,7 @@ Working notes for getting this extension into the Chrome Web Store.
 - [x] **`homepage_url`** in manifest -- points to GitHub repo
 - [x] **No remote code loading** -- FFmpeg.wasm is vendored locally
 - [x] **No inline `<script>` or `eval`** -- verified via CSP `script-src 'self' 'wasm-unsafe-eval'`
-- [x] **Host permissions narrowly scoped** -- `*.wiktionary.org` and `*.wikimedia.org` only
+- [x] **Host permissions narrowly scoped** -- `*.wiktionary.org` and `upload.wikimedia.org` only
 - [x] **`web_accessible_resources` narrowly scoped** -- not the open `*://*/*`
 - [x] **Privacy policy** -- [../PRIVACY.md](../PRIVACY.md); host the rendered URL when submitting
 - [ ] **Screenshots** -- 1-3 PNGs at 1280x800, see "Screenshots to capture" below
@@ -42,14 +42,14 @@ Working notes for getting this extension into the Chrome Web Store.
 > Privacy
 > - No data collection, no analytics, no tracking
 > - WAV conversion runs entirely on your computer; nothing is uploaded
-> - The extension only contacts Wiktionary and Wikimedia servers, exactly like your browser does when you load a Wiktionary page
+> - The extension only contacts Wiktionary and the Wikimedia media server, exactly like your browser does when you load a Wiktionary page
 > - Open source: https://github.com/jhnwnstd/wiktionary-audio-extension-chrome
 >
 > Permissions
 > - Downloads: to save audio files to your Downloads folder
 > - Storage: to remember your Original/Convert/Both preference
 > - Offscreen: to host the local FFmpeg.wasm conversion worker
-> - Access to Wiktionary and Wikimedia only -- the extension has no access to other websites
+> - Access to Wiktionary and Wikimedia's media server only -- the extension has no access to other websites
 
 ## Per-permission justifications
 
@@ -59,7 +59,7 @@ Chrome Web Store reviewers ask for a one-sentence reason per permission. Paste t
 - **`storage`** -- The extension remembers the user's chosen download mode (Original, Convert, or Both) via `chrome.storage.sync` so they do not have to re-pick it on every page.
 - **`offscreen`** -- WAV conversion uses FFmpeg.wasm, which requires a DOM context (Web Workers, SharedArrayBuffer, etc.). MV3 service workers cannot host these, so the extension uses an offscreen document as a hidden DOM environment for the conversion worker. The offscreen document has no network access of its own.
 - **Host access to `*.wiktionary.org`** -- The content script needs to inspect Wiktionary pages to discover audio files and render the on-page panel.
-- **Host access to `*.wikimedia.org`** -- Audio files referenced on Wiktionary pages are served from `upload.wikimedia.org` (a Wikimedia subdomain). The extension fetches them from there for both Original and Convert modes.
+- **Host access to `upload.wikimedia.org`** -- Audio files referenced on Wiktionary pages are served from this host. The extension fetches them from there for both Original and Convert modes, and requests no other Wikimedia subdomain.
 
 ## Single-purpose statement
 

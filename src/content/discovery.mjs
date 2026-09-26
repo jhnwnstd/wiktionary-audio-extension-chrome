@@ -122,6 +122,11 @@ export async function discoverAudio(apiEndpoint, title) {
     format: 'json',
     formatversion: '2',
     origin: '*',
+    // MediaWiki serves a redirect target's content at the redirect URL, so
+    // the page shows the target's audio while `title` (taken from the URL
+    // path) is still the redirect. Without this the query comes back with
+    // the redirect page's own, empty image list and no panel renders.
+    redirects: '1',
     titles: title,
     generator: 'images',
     gimlimit: 'max',

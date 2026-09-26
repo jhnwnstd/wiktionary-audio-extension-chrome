@@ -5,6 +5,7 @@
 
 import { t } from '../shared/i18n.mjs';
 import { batchFolderName } from '../shared/paths.mjs';
+import { CONVERT_MESSAGE_TIMEOUT_MS, ORIGINAL_MESSAGE_TIMEOUT_MS } from '../shared/limits.mjs';
 import { createModeCache } from '../shared/mode-cache.mjs';
 import { isExtensionContextValid, safeSendMessage, showContextInvalidatedMessage } from './context.mjs';
 
@@ -16,7 +17,9 @@ import { isExtensionContextValid, safeSendMessage, showContextInvalidatedMessage
  * @param {string} [folder]
  */
 async function sendDownload(item, mode, folder) {
-  const timeoutMs = mode === 'convert' ? 120000 : 90000;
+  // Both budgets are derived from the service worker's own waits, so the
+  // panel can never give up on a download that is still going to land.
+  const timeoutMs = mode === 'convert' ? CONVERT_MESSAGE_TIMEOUT_MS : ORIGINAL_MESSAGE_TIMEOUT_MS;
   return safeSendMessage({
     type: 'DOWNLOAD_AUDIO',
     url: item.url,

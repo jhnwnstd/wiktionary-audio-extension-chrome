@@ -28,7 +28,7 @@ WAV conversion runs in your browser using a bundled copy of FFmpeg.wasm. Audio b
 - `downloads`: save files to your Downloads folder when you click Download. The extension does not read your existing downloads.
 - `storage`: remember your mode preference.
 - `offscreen`: host the local FFmpeg.wasm worker.
-- Host access limited to `*.wiktionary.org` and `*.wikimedia.org`. The extension cannot read or modify any other website.
+- Host access limited to `*.wiktionary.org` and `upload.wikimedia.org`. The extension cannot read or modify any other website.
 
 ## Source code
 

@@ -8,6 +8,9 @@ import {
   PREFETCH_CONCURRENCY,
   TRANSCODED_CACHE_MAX_BYTES,
   DISMISSED_URLS_MAX,
+  AUDIO_FETCH_TIMEOUT_MS,
+  TRANSCODE_TIMEOUT_MS,
+  DOWNLOAD_WAIT_TIMEOUT_MS,
 } from './shared/limits.mjs';
 import { isAllowedAudioUrl } from './shared/audio-allowlist.mjs';
 import { sanitizeFilename } from './shared/sanitize-filename.mjs';
@@ -15,6 +18,7 @@ import { pathWithFolder } from './shared/paths.mjs';
 import { ByteBoundedCache } from './shared/byte-bounded-cache.mjs';
 import { isAudioContentType } from './shared/content-type.mjs';
 import { ensureAudioExtension } from './shared/audio-info.mjs';
+import { createDownloadClaims } from './shared/download-claims.mjs';
 
 const DEBUG = false;
 const log = DEBUG ? console.log.bind(console) : () => {};
@@ -135,7 +139,7 @@ async function transcodeToWav(srcUrl, baseName) {
   log('[Background] Starting transcode...');
   await ensureOffscreen();
 
-  return withOffscreenPort(90000, (port, settle) => {
+  return withOffscreenPort(TRANSCODE_TIMEOUT_MS, (port, settle) => {
     port.onMessage.addListener((msg) => {
       if (!msg?.ok) {
         settle(false, new Error(msg?.error || 'Transcode failed'));
@@ -175,11 +179,13 @@ const audioCache = new ByteBoundedCache(PREFETCH_CACHE_MAX_BYTES);
 
 // .controller lets PANEL_DISMISSED abort in-flight prefetches; .done lets
 // the click path await an in-flight prefetch instead of issuing a redundant
-// fetch. .source distinguishes 'prefetch' (opportunistic, safe to abort on
-// dismiss) from 'click' (user-initiated; must not be cancelled even if the
-// user minimizes the panel mid-download).
-/** @type {Map<string, { controller: AbortController, done: Promise<void>, source: 'prefetch' | 'click' }>} */
+// fetch. Which fetches are abortable is decided by `claims`, not per entry.
+/** @type {Map<string, { controller: AbortController, done: Promise<void> }>} */
 const inflightPrefetches = new Map();
+
+// URLs a user-initiated download currently owns. dismissUrls consults this;
+// see src/shared/download-claims.mjs for why it exists and why it refcounts.
+const claims = createDownloadClaims();
 
 // Speculatively transcoded WAVs, keyed by source URL. `transcodeInflight`
 // dedupes concurrent transcodes (user click vs speculative) so they share
@@ -314,21 +320,29 @@ function addToCache(url, bytes) {
  * @returns {Promise<ArrayBuffer | null>}
  */
 async function fetchValidatedAudio(url, controller) {
-  // redirect:'follow' is required (Wikimedia CDN routing); the post-fetch
-  // allowlist re-check is what makes that safe.
-  const r = await fetch(url, { credentials: 'omit', signal: controller.signal });
-  if (!r.ok) return null;
-  if (!isAllowedAudioUrl(r.url)) return null;
-  if (!isAudioContentType(r.headers.get('Content-Type'))) return null;
-  // Number.isFinite filters NaN/Infinity from a malformed header.
-  const declared = parseInt(r.headers.get('Content-Length') || '0', 10);
-  if (Number.isFinite(declared) && declared > PER_FILE_MAX_BYTES) {
-    controller.abort();
-    return null;
+  // Bound the whole exchange. Without this a stalled connection pins the
+  // inflight entry (and, on the click path, the download claim protecting
+  // it) open for as long as the socket lives.
+  const timer = setTimeout(() => controller.abort(), AUDIO_FETCH_TIMEOUT_MS);
+  try {
+    // redirect:'follow' is required (Wikimedia CDN routing); the post-fetch
+    // allowlist re-check is what makes that safe.
+    const r = await fetch(url, { credentials: 'omit', signal: controller.signal });
+    if (!r.ok) return null;
+    if (!isAllowedAudioUrl(r.url)) return null;
+    if (!isAudioContentType(r.headers.get('Content-Type'))) return null;
+    // Number.isFinite filters NaN/Infinity from a malformed header.
+    const declared = parseInt(r.headers.get('Content-Length') || '0', 10);
+    if (Number.isFinite(declared) && declared > PER_FILE_MAX_BYTES) {
+      controller.abort();
+      return null;
+    }
+    const bytes = await r.arrayBuffer();
+    if (bytes.byteLength === 0 || bytes.byteLength > PER_FILE_MAX_BYTES) return null;
+    return bytes;
+  } finally {
+    clearTimeout(timer);
   }
-  const bytes = await r.arrayBuffer();
-  if (bytes.byteLength === 0 || bytes.byteLength > PER_FILE_MAX_BYTES) return null;
-  return bytes;
 }
 
 // Cache hit, await in-flight prefetch, or do our own validated fetch.
@@ -350,13 +364,13 @@ async function ensureValidatedBytes(url) {
   }
   // No cache and nothing in flight; fetch it ourselves. Register an
   // inflight entry so a concurrent second click on the same URL shares
-  // this fetch via the await branch above.
+  // this fetch via the await branch above. The caller holds a download
+  // claim, which is what keeps PANEL_DISMISSED from aborting this.
   const controller = new AbortController();
   /** @type {(value?: void) => void} */
   let resolveDone = () => {};
   const done = new Promise(r => { resolveDone = r; });
-  // source: 'click' so PANEL_DISMISSED can't abort a user-initiated fetch.
-  inflightPrefetches.set(url, { controller, done, source: 'click' });
+  inflightPrefetches.set(url, { controller, done });
   try {
     const bytes = await fetchValidatedAudio(url, controller);
     if (bytes) addToCache(url, bytes);
@@ -412,7 +426,7 @@ async function prefetchAudio(items) {
         /** @type {(value?: void) => void} */
         let resolveDone = () => {};
         const done = new Promise(r => { resolveDone = r; });
-        inflightPrefetches.set(url, { controller, done, source: 'prefetch' });
+        inflightPrefetches.set(url, { controller, done });
         try {
           const bytes = await fetchValidatedAudio(url, controller);
           if (bytes) addToCache(url, bytes);
@@ -439,16 +453,20 @@ async function prefetchAudio(items) {
 // PANEL_DISMISSED: tombstone, abort, evict. Tombstone goes first so late-
 // landing work can't repopulate. Cache.delete() handles byte bookkeeping
 // and (for transcoded) blob revocation via onEvict.
+//
+// Claimed URLs are skipped wholesale. Dismissal only ever means "stop doing
+// speculative work for me"; it is never a cancel for a download the user
+// asked for. Skipping the tombstone is the load-bearing part: with one set,
+// a transcode that finishes after this point gets refused by addTranscoded,
+// which revokes the very blob URL the convert path is about to hand to
+// chrome.downloads.
 /** @param {string[]} urls */
 function dismissUrls(urls) {
   for (const url of urls) {
     if (typeof url !== 'string') continue;
+    if (claims.has(url)) continue;
     dismissUrl(url);
-    // Only abort opportunistic prefetches. A click-path fetch is a real
-    // user-initiated download; minimizing the panel mid-download must
-    // not cancel it.
-    const inflight = inflightPrefetches.get(url);
-    if (inflight && inflight.source === 'prefetch') inflight.controller.abort();
+    inflightPrefetches.get(url)?.controller.abort();
     audioCache.delete(url);
     transcodedCache.delete(url);
   }
@@ -480,7 +498,7 @@ chrome.downloads.onChanged.addListener(/** @param {any} delta */ delta => {
  * @param {number} [timeoutMs]
  * @returns {Promise<string>}
  */
-function waitForDownloadComplete(downloadId, timeoutMs = 60000) {
+function waitForDownloadComplete(downloadId, timeoutMs = DOWNLOAD_WAIT_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingDownloads.delete(downloadId);
@@ -506,6 +524,52 @@ function waitForDownloadComplete(downloadId, timeoutMs = 60000) {
       }
     });
   });
+}
+
+// Build chrome.downloads options for the two modes. Split out of the message
+// handler so it reads as claim -> build -> download -> wait -> release.
+
+/**
+ * Convert mode. A cached WAV returns instantly; otherwise transcodeForUrl
+ * shares any in-flight transcode or starts a fresh one. transcodedCache owns
+ * the returned blob URL until the handler's claim release evicts it.
+ * @param {string} url
+ * @param {string} originalFilename
+ * @param {string | undefined} folder
+ * @returns {Promise<{ url: string, filename: string, saveAs: boolean }>}
+ */
+async function convertDownloadOptions(url, originalFilename, folder) {
+  log('[Background] Converting:', originalFilename, folder ? `-> ${folder}/` : '');
+  const baseName = sanitizeFilename(originalFilename.replace(/\.[^.]+$/, ''));
+  const { filename, blobUrl } = await transcodeForUrl(url, baseName);
+  return { url: blobUrl, filename: pathWithFolder(folder, filename), saveAs: false };
+}
+
+/**
+ * Original mode. Routing every download through audioCache means
+ * chrome.downloads only ever writes pre-validated bytes (URL allowlist +
+ * Content-Type + size cap, all enforced inside ensureValidatedBytes);
+ * chrome.downloads itself never issues a network fetch for audio, and the
+ * data URL is just the handoff. The saved file's extension comes from
+ * `filename`, not the data URL MIME.
+ * @param {string} url
+ * @param {string} originalFilename
+ * @param {string | undefined} folder
+ * @returns {Promise<{ url: string, filename: string, saveAs: boolean }>}
+ */
+async function originalDownloadOptions(url, originalFilename, folder) {
+  const bytes = await ensureValidatedBytes(url);
+  if (!bytes) throw new Error('audio fetch failed');
+  log('[Background] Downloading original (data URL):', originalFilename, folder ? `-> ${folder}/` : '');
+  return {
+    url: `data:application/octet-stream;base64,${arrayBufferToBase64(bytes)}`,
+    // Clamp the trailing extension to an audio type before it hits disk.
+    // fetchValidatedAudio already confirmed the bytes are audio; this
+    // belts-and-braces guards against an upstream mediatype filter slip
+    // that lets a deceptive .exe-suffixed filename round-trip through.
+    filename: pathWithFolder(folder, ensureAudioExtension(originalFilename)),
+    saveAs: false,
+  };
 }
 
 // Accept messages only from our own extension pages or content scripts on
@@ -576,7 +640,12 @@ chrome.runtime.onMessage.addListener(
     sendResponse({ ok: false, error: 'invalid filename' });
     return false;
   }
-  if (mode !== 'original' && mode !== 'convert' && mode !== 'both') {
+  // One message, one file. 'both' is a panel-level preference that the panel
+  // fans out into an 'original' and a 'convert' request (subModesFor in
+  // content/ui.mjs), so it is not a valid mode here. Accepting it previously
+  // routed it to the Original branch, silently downloading one file for a
+  // request that asked for two.
+  if (mode !== 'original' && mode !== 'convert') {
     sendResponse({ ok: false, error: 'invalid mode' });
     return false;
   }
@@ -584,65 +653,37 @@ chrome.runtime.onMessage.addListener(
     sendResponse({ ok: false, error: 'invalid folder' });
     return false;
   }
-  const baseName = sanitizeFilename(originalFilename.replace(/\.[^.]+$/, ''));
+  // Claim the URL before the first await. A PANEL_DISMISSED arriving while
+  // this download runs must not tombstone, abort or evict any of it; the
+  // claim is released in the finally below, however this settles.
+  claims.retain(url);
 
   (async () => {
-    /** @type {{ url: string, filename: string, saveAs: boolean }} */
-    let opts;
-    if (mode === 'convert') {
-      // Cached WAV returns instantly; otherwise transcodeForUrl shares
-      // any in-flight transcode or kicks off a fresh one.
-      log('[Background] Converting:', originalFilename, folder ? `-> ${folder}/` : '');
-      const { filename, blobUrl } = await transcodeForUrl(url, baseName);
-      opts = {
-        url: blobUrl,
-        filename: pathWithFolder(folder, filename),
-        saveAs: false,
-      };
-    } else {
-      // Route every Original download through audioCache so chrome.downloads
-      // only ever writes pre-validated bytes (URL allowlist + Content-Type
-      // + size cap, all enforced inside ensureValidatedBytes). chrome.
-      // downloads itself never issues a network fetch for audio under
-      // this design; the SW does the only fetch, and the data URL is
-      // just the handoff. Saved file's extension comes from `filename`,
-      // not the data URL MIME.
-      const bytes = await ensureValidatedBytes(url);
-      if (!bytes) throw new Error('audio fetch failed');
-      log('[Background] Downloading original (data URL):', originalFilename, folder ? `-> ${folder}/` : '');
-      // Clamp the trailing extension to an audio type before it hits disk.
-      // fetchValidatedAudio already confirmed the bytes are audio; this
-      // belts-and-braces guards against an upstream mediatype filter slip
-      // that lets a deceptive .exe-suffixed filename round-trip through.
-      opts = {
-        url: `data:application/octet-stream;base64,${arrayBufferToBase64(bytes)}`,
-        filename: pathWithFolder(folder, ensureAudioExtension(originalFilename)),
-        saveAs: false,
-      };
-    }
-
+    const opts = mode === 'convert'
+      ? await convertDownloadOptions(url, originalFilename, folder)
+      : await originalDownloadOptions(url, originalFilename, folder);
     // chrome.downloads.download resolves once the download is INITIATED
     // (returns the downloadId), not when the file actually lands. We then
     // wait for the terminal state so the panel only flips to "Downloaded"
     // when a file actually reached disk; user cancellations and policy
     // blocks become 'interrupted' and surface as a failure.
     const downloadId = await chrome.downloads.download(opts);
-    const state = await waitForDownloadComplete(downloadId);
-    // Eager cleanup for the convert path: once the download terminates,
-    // the transcoded WAV has served its purpose. Evicting now triggers
-    // the onEvict callback that revokes the blob URL in offscreen, so
-    // memory doesn't accumulate across a convert-heavy session. A re-
-    // click pays a re-transcode; the "Downloaded" button state means
-    // that's rare in practice.
-    if (mode === 'convert') transcodedCache.delete(url);
-    if (state === 'complete') {
-      sendResponse({ ok: true });
-    } else {
-      sendResponse({ ok: false, error: state });
-    }
-  })().catch(error => {
-    logError('[Background] Download error:', error.message);
-    sendResponse({ ok: false, error: error.message });
+    return waitForDownloadComplete(downloadId);
+  })().then(
+    state => sendResponse(state === 'complete' ? { ok: true } : { ok: false, error: state }),
+    error => {
+      logError('[Background] Download error:', error.message);
+      sendResponse({ ok: false, error: error.message });
+    },
+  ).finally(() => {
+    // Last claim released: the transcoded WAV has served its purpose, so
+    // evict it now (onEvict revokes the blob URL in offscreen) rather than
+    // letting it sit until LRU pressure. A re-click pays a re-transcode,
+    // which the persistent "Downloaded" button state makes rare. Keyed on
+    // the claim rather than on `mode` so `both` mode cleans up whichever
+    // of its two requests finishes last; a no-op on the Original path,
+    // which never caches a WAV.
+    if (claims.release(url)) transcodedCache.delete(url);
   });
 
   return true; // Keep channel open for async response

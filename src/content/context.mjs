@@ -35,11 +35,14 @@ export function showContextInvalidatedMessage() {
 
 /**
  * Promise-shaped sendMessage with timeout. Surfaces chrome.runtime.lastError.
+ * `timeoutMs` is required: every caller has its own budget (see
+ * ORIGINAL_MESSAGE_TIMEOUT_MS / CONVERT_MESSAGE_TIMEOUT_MS in
+ * shared/limits.mjs), and a shared default here just drifts from them.
  * @param {object} message
- * @param {{ timeoutMs?: number }} [opts]
+ * @param {{ timeoutMs: number }} opts
  * @returns {Promise<DownloadResponse | undefined>}
  */
-export async function safeSendMessage(message, { timeoutMs = 90000 } = {}) {
+export async function safeSendMessage(message, { timeoutMs }) {
   if (!isExtensionContextValid()) {
     showContextInvalidatedMessage();
     throw new Error('Extension context invalidated');

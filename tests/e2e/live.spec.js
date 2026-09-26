@@ -198,7 +198,7 @@ test.describe('download paths', { tag: '@live' }, () => {
     downloadMetrics.push({ label: `Download All (${itemCount} items)`, ms: Date.now() - start });
   });
 
-  test('Convert mode produces WAV (full FFmpeg cold path)', async () => {
+  test('Convert mode produces WAV', async () => {
     const extensionId = await getExtensionId(context);
 
     // Flip mode to convert via the popup, confirm storage.sync.set persisted
@@ -212,6 +212,29 @@ test.describe('download paths', { tag: '@live' }, () => {
       .toBe('convert');
     await popup.close();
 
+    // Capture what the service worker hands chrome.downloads. This is the
+    // durable proof that Convert mode ran: the convert path downloads a
+    // blob: URL named *.wav, the Original path a data: URL named *.ogg, so
+    // one assertion distinguishes them and cannot be raced.
+    //
+    // The earlier version of this test watched for the transient
+    // "Converting..." label instead, and that has not been reliable since
+    // speculative transcoding landed: when the WAV is already cached by the
+    // time the user clicks, the label lives single-digit milliseconds
+    // (measured at ~7ms), far below the first assertion poll. It failed on
+    // every scheduled CI run while passing locally, where the click usually
+    // beats the speculative transcode and the label lasts ~1.4s.
+    let [sw] = context.serviceWorkers();
+    if (!sw) sw = await context.waitForEvent('serviceworker');
+    await sw.evaluate(() => {
+      globalThis.__wadDownloads = [];
+      const orig = chrome.downloads.download;
+      chrome.downloads.download = function (opts, cb) {
+        globalThis.__wadDownloads.push({ filename: opts.filename, url: opts.url });
+        return orig.call(this, opts, cb);
+      };
+    });
+
     const page = await context.newPage();
     await page.goto('https://en.wiktionary.org/wiki/water', {
       waitUntil: 'domcontentloaded',
@@ -224,19 +247,18 @@ test.describe('download paths', { tag: '@live' }, () => {
     const start = Date.now();
     await btn.click();
 
-    // Proves Convert mode was actually requested (Original mode skips this
-    // preparingConverter feedback entirely). If storage.sync.set didn't stick,
-    // this assertion fails fast instead of letting an Original-path download
-    // masquerade as a successful conversion.
-    await expect(btn).toContainText(/Converting/, { timeout: 5_000 });
-    const preparingMs = Date.now() - start;
-
     // Cold FFmpeg load + transcode can take up to ~60s on first run.
     await expect(btn).toContainText(/Downloaded/, { timeout: 120_000 });
     const ackMs = Date.now() - start;
 
-    downloadMetrics.push({ label: 'Convert: click->preparing', ms: preparingMs });
-    downloadMetrics.push({ label: 'Convert: click->ack (cold full path)', ms: ackMs });
+    const captured = await sw.evaluate(() => globalThis.__wadDownloads);
+    expect(captured.length).toBeGreaterThanOrEqual(1);
+    const saved = captured[captured.length - 1];
+    // A real conversion happened: FFmpeg output, handed over as a blob URL.
+    expect(saved.filename).toMatch(/\.wav$/);
+    expect(saved.url).toMatch(/^blob:/);
+
+    downloadMetrics.push({ label: 'Convert: click->ack', ms: ackMs });
   });
 
   // Regression: in Convert/Both mode, background should speculatively

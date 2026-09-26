@@ -67,8 +67,11 @@ test.describe('content script audio discovery', () => {
   });
 
   test('discovers audio via Action API generator=images', async () => {
-    await context.route('**/w/api.php**', (route) =>
-      route.fulfill({
+    /** @type {string[]} */
+    const apiUrls = [];
+    await context.route('**/w/api.php**', (route) => {
+      apiUrls.push(route.request().url());
+      return route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify(
@@ -83,8 +86,8 @@ test.describe('content script audio discovery', () => {
             },
           ])
         ),
-      })
-    );
+      });
+    });
 
     const page = await context.newPage();
     await page.goto(WATER_URL);
@@ -95,6 +98,18 @@ test.describe('content script audio discovery', () => {
     // Parser -> human-readable display end-to-end.
     await expect(page.getByTestId('wad-audio-filename').first()).toHaveText("English American 'water' .ogg");
     await expect(page.getByTestId('wad-audio-filename').nth(1)).toHaveText("English British 'water' .ogg");
+
+    // Query shape, asserted on the real outgoing request rather than by
+    // grepping the source. redirects=1 is load-bearing: MediaWiki serves a
+    // redirect target's content at the redirect URL, so without it a query
+    // for the redirect title returns that page's own empty image list and no
+    // panel renders. formatversion=2 is what audioItemsFromPages' array-
+    // shaped input assumes.
+    expect(apiUrls.length).toBeGreaterThanOrEqual(1);
+    const params = new URL(apiUrls[0]).searchParams;
+    expect(params.get('redirects')).toBe('1');
+    expect(params.get('formatversion')).toBe('2');
+    expect(params.get('generator')).toBe('images');
   });
 
   test('filters out non-audio files using mediatype (BITMAP, VIDEO)', async () => {
@@ -414,6 +429,62 @@ test.describe('content script audio discovery', () => {
     // The fix asserts: the click-source inflight survives, fetch completes,
     // button reaches Downloaded. Pre-fix it would have flipped to Failed.
     await expect(downloadBtn).toContainText(/Downloaded/, { timeout: 10_000 });
+  });
+
+  // Companion to the test above, covering the other half of the claim guard.
+  // That one pins "the fetch is not aborted"; this one pins "the URL is not
+  // tombstoned or evicted either". Background holds a download claim for the
+  // whole of a user-initiated download (src/shared/download-claims.mjs), and
+  // dismissUrls skips claimed URLs outright. Without that, PANEL_DISMISSED
+  // tombstoned the URL mid-download, which blocked addToCache here and, on
+  // the Convert path, made addTranscoded revoke the blob URL that
+  // chrome.downloads was about to read.
+  //
+  // Setup differs from the test above on purpose: the prefetch is allowed to
+  // succeed, so the click path takes its await-the-inflight-prefetch branch
+  // rather than fetching for itself.
+  test('PANEL_DISMISSED leaves an active download\'s URL cached, not tombstoned', async () => {
+    const AUDIO_URL = 'https://upload.wikimedia.org/x/En-us-water.ogg';
+    const FAKE_OGG = Buffer.from([0x4f, 0x67, 0x67, 0x53, 0x00, 0x02, 0x00, 0x00]);
+
+    let fetchCount = 0;
+    await context.route(AUDIO_URL, async (route) => {
+      fetchCount++;
+      // Slow enough that the dismiss timer (minimize + 2 s) lands while the
+      // download is still waiting on these bytes.
+      await new Promise(r => setTimeout(r, 4000));
+      await route.fulfill({ status: 200, contentType: 'audio/ogg', body: FAKE_OGG });
+    });
+    await context.route('**/w/api.php**', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(actionApiResponse([{ title: 'File:En-us-water.ogg', url: AUDIO_URL }])),
+      })
+    );
+
+    const page = await context.newPage();
+    await page.goto(WATER_URL);
+    await expect(page.getByTestId('wad-panel')).toBeVisible();
+
+    const downloadBtn = page.getByTestId('wad-download').first();
+    await downloadBtn.click();          // claims the URL
+    await page.waitForTimeout(500);
+    await page.getByTestId('wad-minimize').click();   // dismiss fires mid-fetch
+
+    await expect(downloadBtn).toContainText(/Downloaded/, { timeout: 20_000 });
+
+    let [sw] = context.serviceWorkers();
+    if (!sw) sw = await context.waitForEvent('serviceworker');
+    const cached = await sw.evaluate(
+      (url) => globalThis._wadInspectAudioCache().cachedUrls.includes(url),
+      AUDIO_URL,
+    );
+    // The assertion that earns the test. Pre-fix this was false: the dismiss
+    // aborted the in-flight prefetch and tombstoned the URL, so the click
+    // path had to refetch and the bytes never landed in the cache.
+    expect(cached).toBe(true);
+    expect(fetchCount).toBe(1);
   });
 
   test('minimize >2s evicts the prefetch cache; reopening re-prefetches', async () => {

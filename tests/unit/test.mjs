@@ -14,6 +14,8 @@ import {
 } from '../../src/shared/audio-info.mjs';
 import {
   PER_FILE_MAX_BYTES, OUTPUT_MAX_BYTES,
+  AUDIO_FETCH_TIMEOUT_MS, TRANSCODE_TIMEOUT_MS, DOWNLOAD_WAIT_TIMEOUT_MS,
+  ORIGINAL_MESSAGE_TIMEOUT_MS, CONVERT_MESSAGE_TIMEOUT_MS,
 } from '../../src/shared/limits.mjs';
 import {
   sanitizeFilename, truncateToBytes, utf8ByteLength,
@@ -1015,6 +1017,88 @@ section('manifest.json parity');
       allowedDirs.includes(dir),
       `web_accessible_resources covers content-script load('${path}') (dir '${dir}')`
     );
+  }
+}
+
+section('createDownloadClaims: user-initiated downloads outrank dismissal');
+{
+  const { createDownloadClaims } = await import('../../src/shared/download-claims.mjs');
+
+  // Basic retain/release lifecycle.
+  {
+    const claims = createDownloadClaims();
+    assert(!claims.has('a'), 'unclaimed url: has() false');
+    assert(claims.size() === 0, 'unclaimed: size 0');
+    claims.retain('a');
+    assert(claims.has('a'), 'retained: has() true');
+    assert(claims.release('a') === true, 'single release is the last release');
+    assert(!claims.has('a'), 'released: has() false');
+    assert(claims.size() === 0, 'released: size back to 0');
+  }
+
+  // Refcounting: `both` mode fans out to two requests for one URL, and a row
+  // click can land while Download All is on that same item. Cleanup must run
+  // only once both are done.
+  {
+    const claims = createDownloadClaims();
+    claims.retain('a');
+    claims.retain('a');
+    assert(claims.release('a') === false, 'first of two releases is not the last');
+    assert(claims.has('a'), 'still claimed after first release');
+    assert(claims.release('a') === true, 'second of two releases is the last');
+    assert(!claims.has('a'), 'claim gone after both releases');
+  }
+
+  // An unbalanced release must not report itself as the last one, or it would
+  // trigger cleanup for a download it does not own.
+  {
+    const claims = createDownloadClaims();
+    assert(claims.release('never-retained') === false, 'release without retain returns false');
+    claims.retain('a');
+    claims.release('a');
+    assert(claims.release('a') === false, 'double release returns false the second time');
+    assert(claims.size() === 0, 'double release leaves no ghost entry');
+  }
+
+  // Claims are per URL; one download does not shield another.
+  {
+    const claims = createDownloadClaims();
+    claims.retain('a');
+    assert(claims.has('a') && !claims.has('b'), 'claims do not leak across urls');
+    assert(claims.size() === 1, 'one claimed url');
+    claims.retain('b');
+    assert(claims.size() === 2, 'two claimed urls');
+    claims.release('a');
+    assert(!claims.has('a') && claims.has('b'), 'releasing a leaves b claimed');
+  }
+}
+
+section('Timeout budget: panel waits longer than the service worker can take');
+{
+  // The bug this pins: the panel gave up at 120 s while the SW's worst case
+  // (90 s transcode + 60 s download wait) was 150 s, so a slow conversion
+  // showed "Failed" for a file that still landed on disk.
+  assert(
+    CONVERT_MESSAGE_TIMEOUT_MS > TRANSCODE_TIMEOUT_MS + DOWNLOAD_WAIT_TIMEOUT_MS,
+    `convert budget (${CONVERT_MESSAGE_TIMEOUT_MS}ms) exceeds SW worst case ` +
+    `(${TRANSCODE_TIMEOUT_MS} + ${DOWNLOAD_WAIT_TIMEOUT_MS} = ${TRANSCODE_TIMEOUT_MS + DOWNLOAD_WAIT_TIMEOUT_MS}ms)`
+  );
+  assert(
+    ORIGINAL_MESSAGE_TIMEOUT_MS > AUDIO_FETCH_TIMEOUT_MS + DOWNLOAD_WAIT_TIMEOUT_MS,
+    `original budget (${ORIGINAL_MESSAGE_TIMEOUT_MS}ms) exceeds SW worst case ` +
+    `(${AUDIO_FETCH_TIMEOUT_MS} + ${DOWNLOAD_WAIT_TIMEOUT_MS} = ${AUDIO_FETCH_TIMEOUT_MS + DOWNLOAD_WAIT_TIMEOUT_MS}ms)`
+  );
+  // Converting is strictly the slower path, so its budget must be the larger.
+  assert(CONVERT_MESSAGE_TIMEOUT_MS > ORIGINAL_MESSAGE_TIMEOUT_MS,
+    'convert budget exceeds original budget');
+  // Every wait is bounded: an unbounded audio fetch would make the original
+  // budget unprovable no matter how large it was set.
+  for (const [name, ms] of [
+    ['AUDIO_FETCH_TIMEOUT_MS', AUDIO_FETCH_TIMEOUT_MS],
+    ['TRANSCODE_TIMEOUT_MS', TRANSCODE_TIMEOUT_MS],
+    ['DOWNLOAD_WAIT_TIMEOUT_MS', DOWNLOAD_WAIT_TIMEOUT_MS],
+  ]) {
+    assert(Number.isFinite(ms) && ms > 0, `${name} is a finite positive duration`);
   }
 }
 
