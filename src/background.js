@@ -17,7 +17,7 @@ import { sanitizeFilename } from './shared/sanitize-filename.mjs';
 import { pathWithFolder } from './shared/paths.mjs';
 import { ByteBoundedCache } from './shared/byte-bounded-cache.mjs';
 import { isAudioContentType } from './shared/content-type.mjs';
-import { ensureAudioExtension } from './shared/audio-info.mjs';
+import { originalDownloadName, convertedBaseName } from './shared/download-names.mjs';
 import { createDownloadClaims } from './shared/download-claims.mjs';
 
 const DEBUG = false;
@@ -283,7 +283,7 @@ async function triggerSpeculativeTranscode(url, downloadName) {
   if (transcodeInflight.has(url)) return;
   if (!audioCache.has(url)) return;
 
-  const baseName = sanitizeFilename(String(downloadName || '').replace(/\.[^.]+$/, ''));
+  const baseName = sanitizeFilename(convertedBaseName(downloadName));
   log('[Background] Speculative transcode:', baseName);
   try {
     await transcodeForUrl(url, baseName);
@@ -540,7 +540,7 @@ function waitForDownloadComplete(downloadId, timeoutMs = DOWNLOAD_WAIT_TIMEOUT_M
  */
 async function convertDownloadOptions(url, originalFilename, folder) {
   log('[Background] Converting:', originalFilename, folder ? `-> ${folder}/` : '');
-  const baseName = sanitizeFilename(originalFilename.replace(/\.[^.]+$/, ''));
+  const baseName = sanitizeFilename(convertedBaseName(originalFilename));
   const { filename, blobUrl } = await transcodeForUrl(url, baseName);
   return { url: blobUrl, filename: pathWithFolder(folder, filename), saveAs: false };
 }
@@ -563,11 +563,12 @@ async function originalDownloadOptions(url, originalFilename, folder) {
   log('[Background] Downloading original (data URL):', originalFilename, folder ? `-> ${folder}/` : '');
   return {
     url: `data:application/octet-stream;base64,${arrayBufferToBase64(bytes)}`,
-    // Clamp the trailing extension to an audio type before it hits disk.
-    // fetchValidatedAudio already confirmed the bytes are audio; this
-    // belts-and-braces guards against an upstream mediatype filter slip
-    // that lets a deceptive .exe-suffixed filename round-trip through.
-    filename: pathWithFolder(folder, ensureAudioExtension(originalFilename)),
+    // Clamps the trailing extension to an audio type before it hits disk
+    // (fetchValidatedAudio already confirmed the bytes are audio; this is
+    // belt and braces against an upstream mediatype slip round-tripping a
+    // deceptive .exe-suffixed name) and adds the `_raw` tag when the source
+    // is itself a WAV, so it can't collide with the conversion.
+    filename: pathWithFolder(folder, originalDownloadName(originalFilename)),
     saveAs: false,
   };
 }

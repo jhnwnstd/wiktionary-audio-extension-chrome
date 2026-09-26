@@ -10,8 +10,11 @@ import { join } from 'node:path';
 
 import { AUDIO_HOST_ALLOWLIST, isAllowedAudioUrl } from '../../src/shared/audio-allowlist.mjs';
 import {
-  AUDIO_MIMES, AUDIO_EXT_RE, isAudioInfo, validImageInfo, urlTail, ensureAudioExtension,
+  AUDIO_MIMES, AUDIO_EXT_RE, isAudioInfo, validImageInfo, urlTail,
 } from '../../src/shared/audio-info.mjs';
+import {
+  ensureAudioExtension, originalDownloadName, convertedBaseName,
+} from '../../src/shared/download-names.mjs';
 import {
   PER_FILE_MAX_BYTES, OUTPUT_MAX_BYTES,
   AUDIO_FETCH_TIMEOUT_MS, TRANSCODE_TIMEOUT_MS, DOWNLOAD_WAIT_TIMEOUT_MS,
@@ -917,6 +920,56 @@ section('ensureAudioExtension');
   assert(ensureAudioExtension('.ogg') === '.ogg', 'audio ext: dotfile-shaped already audio');
   assert(ensureAudioExtension('weird.name.with.dots.flac') === 'weird.name.with.dots.flac', 'audio ext: multi-dot stem preserved');
   assert(ensureAudioExtension(/** @type {any} */ (null)) === 'audio.ogg', 'audio ext: null -> audio.ogg');
+}
+
+// A WAV source converts to a WAV, so both modes would write one name and
+// Chrome would silently save the second as "... (1).wav". LinguaLibre records
+// in WAV, so this is the common case on real entries, not a corner.
+section('Download naming: WAV sources disambiguate, everything else is left alone');
+{
+  // The collision case. Both tags are applied off the same clamped name, so
+  // the two sides can never disagree about whether there is a collision.
+  assert(originalDownloadName('english_water_Speaker.wav') === 'english_water_Speaker_raw.wav',
+    'wav source: original tagged _raw');
+  assert(convertedBaseName('english_water_Speaker.wav') === 'english_water_Speaker_48k-mono',
+    'wav source: conversion tagged _48k-mono');
+  assert(originalDownloadName('a.wav') !== `${convertedBaseName('a.wav')}.wav`,
+    'wav source: the two downloads no longer collide');
+
+  // Case-insensitive on the way in, normalized to lowercase .wav on the way
+  // out so the pair reads consistently on disk.
+  assert(originalDownloadName('Sample.WAV') === 'Sample_raw.wav', 'WAV uppercase: original tagged');
+  assert(convertedBaseName('Sample.WAV') === 'Sample_48k-mono', 'WAV uppercase: conversion tagged');
+
+  // Every non-WAV source keeps the name it already had: the extensions
+  // differ, so there is nothing to disambiguate and no reason to churn.
+  for (const [src, ext] of [
+    ['english_australian_water.ogg', 'ogg'],
+    ['german_Wasser.mp3', 'mp3'],
+    ['french_eau.opus', 'opus'],
+    ['x.oga', 'oga'],
+    ['y.flac', 'flac'],
+    ['z.m4a', 'm4a'],
+  ]) {
+    const stem = src.slice(0, src.length - ext.length - 1);
+    assert(originalDownloadName(src) === src, `${ext} source: original name unchanged`);
+    assert(convertedBaseName(src) === stem, `${ext} source: conversion base is the plain stem`);
+    assert(originalDownloadName(src) !== `${convertedBaseName(src)}.wav`,
+      `${ext} source: no collision to begin with`);
+  }
+
+  // Naming runs after the audio-extension clamp, so a non-audio extension is
+  // rewritten to .ogg first and is therefore never treated as a collision.
+  assert(originalDownloadName('payload.exe') === 'payload.ogg', 'clamped first: .exe -> .ogg, untagged');
+  assert(convertedBaseName('payload.exe') === 'payload', 'clamped first: conversion base is the stem');
+
+  // Degenerate inputs still produce a usable, non-colliding pair.
+  for (const bad of [null, undefined, '', 42, 'noext']) {
+    const orig = originalDownloadName(/** @type {any} */ (bad));
+    const conv = `${convertedBaseName(/** @type {any} */ (bad))}.wav`;
+    assert(typeof orig === 'string' && orig.length > 0, `degenerate ${JSON.stringify(bad)}: original is a usable name`);
+    assert(orig !== conv, `degenerate ${JSON.stringify(bad)}: pair does not collide`);
+  }
 }
 
 // Regression: batchFolderName must handle subdomains beyond 2-3 letters.

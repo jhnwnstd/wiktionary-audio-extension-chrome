@@ -261,6 +261,65 @@ test.describe('download paths', { tag: '@live' }, () => {
     downloadMetrics.push({ label: 'Convert: click->ack', ms: ackMs });
   });
 
+  // The filename-collision case, end to end against a real LinguaLibre WAV.
+  // Converting a WAV source yields a WAV, so without disambiguation both
+  // downloads write one name and Chrome silently saves the second as
+  // "... (1).wav", leaving no way to tell the lossy source from the
+  // standardized conversion. en/water carries LL-Q* WAV items, and the panel
+  // sorts English first, so the top row is one of them.
+  test('Both mode on a WAV source writes _raw and _48k-mono, not one name twice', async () => {
+    const extensionId = await getExtensionId(context);
+    const popup = await context.newPage();
+    await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+    await popup.getByTestId('wad-mode-both').check();
+    await expect
+      .poll(async () => popup.evaluate(async () => (await chrome.storage.sync.get('mode')).mode))
+      .toBe('both');
+    await popup.close();
+
+    let [sw] = context.serviceWorkers();
+    if (!sw) sw = await context.waitForEvent('serviceworker');
+    await sw.evaluate(() => {
+      globalThis.__wadDownloads = [];
+      const orig = chrome.downloads.download;
+      chrome.downloads.download = function (opts, cb) {
+        globalThis.__wadDownloads.push({ filename: opts.filename, scheme: String(opts.url).split(':')[0] });
+        return orig.call(this, opts, cb);
+      };
+    });
+
+    const page = await context.newPage();
+    await page.goto('https://en.wiktionary.org/wiki/water', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30_000,
+    });
+
+    await page.getByTestId('wad-audio-item').first().waitFor({ state: 'visible', timeout: 20_000 });
+
+    // Pick the first row whose source really is a WAV; if the entry's audio
+    // ever changes, skip rather than fail on unrelated upstream drift.
+    const rowTitles = await page.getByTestId('wad-audio-item').evaluateAll(
+      (rows) => rows.map((r) => r.getAttribute('title') || '')
+    );
+    const wavIndex = rowTitles.findIndex((t) => /\.wav$/i.test(t));
+    test.skip(wavIndex === -1, 'no WAV-sourced audio on this entry right now');
+
+    const btn = page.getByTestId('wad-download').nth(wavIndex);
+    await btn.click();
+    await expect(btn).toContainText(/Downloaded/, { timeout: 120_000 });
+
+    const got = await sw.evaluate(() => globalThis.__wadDownloads);
+    expect(got.length).toBe(2);
+    const names = got.map((d) => d.filename).sort();
+    expect(new Set(names).size).toBe(2);
+    expect(names.some((n) => n.endsWith('_raw.wav'))).toBe(true);
+    expect(names.some((n) => n.endsWith('_48k-mono.wav'))).toBe(true);
+    // The tags line up with the transports: data: is the untouched original,
+    // blob: the FFmpeg output.
+    expect(got.find((d) => d.filename.endsWith('_raw.wav'))?.scheme).toBe('data');
+    expect(got.find((d) => d.filename.endsWith('_48k-mono.wav'))?.scheme).toBe('blob');
+  });
+
   // Regression: in Convert/Both mode, background should speculatively
   // transcode the top item once prefetch settles. Verifies the wiring via
   // the introspection hook; the user-facing Convert click test above

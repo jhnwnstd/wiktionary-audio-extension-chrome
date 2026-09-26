@@ -30,6 +30,8 @@ Converted output is 16-bit PCM at 48 kHz, mono, with triangular dither. The orig
 
 Batch downloads are grouped into a single subfolder named `Wiktionary-{edition}-{page}`.
 
+Converting a WAV source produces a WAV, so those files are tagged `_raw.wav` for the original and `_48k-mono.wav` for the conversion. Other source formats keep their plain names.
+
 ## Supported browsers
 
 The extension requires Manifest V3 and `chrome.offscreen`, which is available in Chrome 109 and newer. Other Chromium based browsers should work if they support the same extension APIs.

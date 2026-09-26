@@ -666,6 +666,51 @@ test.describe('content script audio discovery', () => {
     expect(filename).not.toContain('british');
   });
 
+  // A WAV source is the one case where Original and Convert would write the
+  // same filename (LinguaLibre records in WAV, so it is common on real
+  // entries). Original picks up a `_raw` tag; the live suite asserts the
+  // matching `_48k-mono` conversion, which needs real FFmpeg. Every other
+  // source keeps its plain name, asserted by the .ogg tests above.
+  test('WAV source: Original download is tagged _raw', async () => {
+    const AUDIO_URL = 'https://upload.wikimedia.org/x/LL-Q1860_%28eng%29-Speaker-water.wav';
+    // RIFF header; chrome.downloads only needs non-empty bytes to save.
+    const FAKE_WAV = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45]);
+    await context.route(AUDIO_URL, (route) =>
+      route.fulfill({ status: 200, contentType: 'audio/wav', body: FAKE_WAV })
+    );
+    await context.route('**/w/api.php**', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(actionApiResponse([
+          { title: 'File:LL-Q1860_(eng)-Speaker-water.wav', url: AUDIO_URL, mime: 'audio/wav' },
+        ])),
+      })
+    );
+
+    let [sw] = context.serviceWorkers();
+    if (!sw) sw = await context.waitForEvent('serviceworker');
+    await sw.evaluate(() => {
+      globalThis.__wadDownloads = [];
+      const orig = chrome.downloads.download;
+      chrome.downloads.download = function (opts, cb) {
+        globalThis.__wadDownloads.push(opts.filename);
+        return orig.call(this, opts, cb);
+      };
+    });
+
+    const page = await context.newPage();
+    await page.goto(WATER_URL);
+    await expect(page.getByTestId('wad-panel')).toBeVisible();
+
+    const downloadBtn = page.getByTestId('wad-download').first();
+    await downloadBtn.click();
+    await expect(downloadBtn).toContainText(/Downloaded/, { timeout: 15_000 });
+
+    const captured = await sw.evaluate(() => globalThis.__wadDownloads);
+    expect(captured).toEqual(['english_water_Speaker_raw.wav']);
+  });
+
   test('renders nothing when no audio is discovered', async () => {
     await context.route('**/w/api.php**', (route) =>
       route.fulfill({
